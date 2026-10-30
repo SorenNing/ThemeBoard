@@ -24,7 +24,8 @@ typedef struct {
 static NSString *gLogPath;
 static NSMutableDictionary<NSString *, NSString *> *gIndex;
 static NSString *gIndexTheme;
-static NSMutableSet<NSValue *> *gCaches;      // 见过的缓存实例
+static NSMutableSet<NSValue *> *gCaches;
+static NSCache *gImageCache;      // 已生成的图标缓存
 static NSLock *gLock;
 static NSUInteger gServe, gMiss;
 
@@ -132,6 +133,8 @@ typedef struct { CGSize size; double scale; double ratio; } TBInfo;
 typedef TBInfo (*TBInfoFn)(id, SEL);
 
 /// 把主题图缩放成系统期望的尺寸（关键：否则会因 size 不匹配把 SpringBoard 弄崩）
+static NSMutableDictionary<NSString *, UIImage *> *gFitCache;
+
 static UIImage *TBFitImage(UIImage *img, TBInfo info) {
     if (!img) return nil;
     CGSize pt = info.size;
@@ -255,15 +258,25 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
     }];
 }
 
+/// 取主题图：锁内只做字典查找，读盘/绘制都在锁外，避免 SpringBoard 被拖死
 static UIImage *TBImageForBundle(NSString *bid) {
     if (!bid.length || !TBEnabled()) return nil;
     if (TBSafeMode()) return nil;   // 安全模式：只记日志，绝不改图
+
     [gLock lock];
     TBLoadIndex();
-    NSString *p = gIndex[bid];
-    UIImage *img = p ? [UIImage imageWithContentsOfFile:p] : nil;
+    NSString *path = gIndex[bid];
     [gLock unlock];
-    if (img) img = TBDynamicIcon(img, bid);
+    if (!path) return nil;
+
+    UIImage *cached = [gImageCache objectForKey:bid];
+    if (cached) return cached;
+
+    UIImage *img = [UIImage imageWithContentsOfFile:path];
+    if (img) {
+        img = TBDynamicIcon(img, bid);
+        [gImageCache setObject:img forKey:bid];
+    }
     return img;
 }
 
@@ -459,15 +472,20 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
         }
     }
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        TBRefreshSpringBoard();
-    });
+    [gImageCache removeAllObjects];
+    if (TBPref(@"ForceRefresh") && [TBPref(@"ForceRefresh") boolValue]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            TBRefreshSpringBoard();
+        });
+    }
 }
 
 __attribute__((constructor))
 static void TBMain(void) {
     gLock = [[NSLock alloc] init];
+    gImageCache = [[NSCache alloc] init];
+    gImageCache.countLimit = 600;
     TBLog(@"=== ThemeBoardEngine 0.2 加载 pid=%d ===", getpid());
     TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
     TBInstall();

@@ -27,6 +27,19 @@ static NSString *const kPlistName = @"ThemeBoardEngine.plist";
     return nil;
 }
 
++ (NSString *)runtimeState {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *p in @[@"/var/mobile/Library/ThemeBoard/engine.log",
+                          @"/var/jb/var/mobile/Library/ThemeBoard/engine.log"]) {
+        NSDictionary *attrs = [fm attributesOfItemAtPath:p error:NULL];
+        if (!attrs) continue;
+        NSDate *mt = attrs[NSFileModificationDate];
+        NSTimeInterval age = mt ? -[mt timeIntervalSinceNow] : 1e9;
+        return age < 180 ? @"运行中" : @"已安装·未运行";
+    }
+    return @"未检测到";
+}
+
 + (BOOL)isInstalled {
     for (NSString *d in [self candidateDirs]) {
         if ([[NSFileManager defaultManager] fileExistsAtPath:[d stringByAppendingPathComponent:kDylibName]]) {

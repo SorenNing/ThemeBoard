@@ -74,10 +74,10 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) {
-        if ([TBEngineInstaller isInstalled]) {
-            return @"引擎已安装。换主题、改开关都不需要重启桌面。";
-        }
-        return @"引擎还没装。点「安装 / 更新引擎」写入注入目录，然后重启一次桌面即可，以后不用再重启。";
+        NSString *st = [TBEngineInstaller runtimeState];
+        if ([st isEqualToString:@"运行中"]) return @"引擎正在运行。换主题、改开关都不需要重启桌面。";
+        if ([st isEqualToString:@"已安装·未运行"]) return @"引擎已安装但当前没在跑，重启一次桌面即可生效。";
+        return @"没有检测到引擎日志。请用引擎包装一次（App 在 RootHide 下无法写入注入目录）。";
     }
     if (section == 1) return @"关闭后完全恢复系统原样。";
     if (section == 2) return @"关掉某一项，那个位置就保持系统原样。";
@@ -121,11 +121,13 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         if ([row[@"act"] isEqualToString:@"engineInfo"]) {
             cell.accessoryType = UITableViewCellAccessoryNone;
-            BOOL ok = [TBEngineInstaller isInstalled];
-            cell.detailTextLabel.text = ok ? @"已安装" : @"未安装";
-            cell.detailTextLabel.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
-            if ([TBEngineInstaller dynamicLibrariesDir] == nil) {
-                cell.detailTextLabel.text = @"未安装（目录不可见）";
+            NSString *st = [TBEngineInstaller runtimeState];
+            cell.detailTextLabel.text = st;
+            if ([st isEqualToString:@"运行中"]) {
+                cell.detailTextLabel.textColor = [UIColor systemGreenColor];
+            } else if ([st isEqualToString:@"已安装·未运行"]) {
+                cell.detailTextLabel.textColor = [UIColor systemOrangeColor];
+            } else {
                 cell.detailTextLabel.textColor = [UIColor systemRedColor];
             }
         }
