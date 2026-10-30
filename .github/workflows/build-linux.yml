@@ -16,16 +16,37 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git make unzip xz-utils ldid
+          sudo apt-get install -y curl git make unzip xz-utils python3
 
       - name: 安装 Theos（Linux 工具链）
         run: |
           export THEOS=$HOME/theos
           git clone --recursive https://github.com/theos/theos.git $THEOS
           git clone --depth 1 https://github.com/theos/sdks.git $THEOS/sdks || true
-          ls $THEOS | head
-          ls $THEOS/toolchain 2>/dev/null || echo "toolchain 目录不存在"
-          ls $THEOS/sdks 2>/dev/null | head
+          if [ -x "$THEOS/bin/install-theos" ]; then yes | $THEOS/bin/install-theos || true; fi
+          if [ ! -d "$THEOS/toolchain/linux/iphone/bin" ]; then
+            echo "== 用 sbingner 的 Linux iOS 工具链 =="
+            curl -sS "https://api.github.com/repos/sbingner/llvm-project/releases" -o /tmp/rel.json || true
+            URL=$(python3 - <<'PY2'
+import json
+try:
+    d=json.load(open('/tmp/rel.json'))
+    for r in d:
+        for a in r.get('assets',[]):
+            if a['name'].endswith('.tar.lzma'):
+                print(a['browser_download_url']); raise SystemExit
+except Exception: pass
+PY2
+)
+            echo "toolchain url: $URL"
+            if [ -n "$URL" ]; then
+              curl -L -o /tmp/tc.tar.lzma "$URL"
+              mkdir -p "$THEOS/toolchain/linux"
+              tar -x --lzma -f /tmp/tc.tar.lzma -C "$THEOS/toolchain/linux"
+            fi
+          fi
+          ls "$THEOS/toolchain" 2>/dev/null || echo "toolchain 目录不存在"
+          ls "$THEOS/sdks" 2>/dev/null | head -3
 
       - name: 诊断工具链
         continue-on-error: true
