@@ -32,7 +32,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     [super viewDidLoad];
     self.title = @"设置";
 
-    TBAttachFrost(self.view);
     TBGlassTable(self.tableView);
     self.tableView.rowHeight = 56;
 

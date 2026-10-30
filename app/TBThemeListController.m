@@ -36,7 +36,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     [super viewDidLoad];
     self.title = @"主题";
     self.tableView.rowHeight = 76;
-    TBAttachFrost(self.view);
     TBGlassTable(self.tableView);
 
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];

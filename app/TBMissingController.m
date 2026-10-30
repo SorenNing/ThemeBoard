@@ -25,7 +25,6 @@
     [super viewDidLoad];
     self.title = @"缺少图标";
     self.tableView.rowHeight = 60;
-    TBAttachFrost(self.view);
     TBGlassTable(self.tableView);
 }
 

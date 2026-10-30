@@ -3,7 +3,10 @@
 /// 动态色（浅色 / 深色各一份）
 UIColor *TBDynamicColor(UIColor *light, UIColor *dark);
 
-/// 页面级磨砂底：四角彩色 blob 渐变，铺满并插到最底层
+/// 窗口级磨砂底（唯一正确的位置：不会随内容滚动）
+void TBAttachWindowFrost(UIWindow *window);
+
+/// 页面级磨砂底（仅在非表格页面用）：四角彩色 blob 渐变，铺满并插到最底层
 void TBAttachFrost(UIView *host);
 
 /// 玻璃卡片：SystemThinMaterial 打底 + 玻璃填充 + 白 rim
