@@ -42,10 +42,25 @@ PY
     tar -x --lzma -f /tmp/tc.tar.lzma -C "$THEOS/toolchain/linux" || tar -xJf /tmp/tc.tar.lzma -C "$THEOS/toolchain/linux" || true
   fi
 fi
-ls "$THEOS/toolchain" 2>/dev/null || echo "无 toolchain 目录"
-ls "$THEOS/toolchain/linux/iphone/bin" 2>/dev/null | head -20 || true
+echo "== toolchain 目录树（前 40 项）=="
+find "$THEOS/toolchain" -maxdepth 4 2>/dev/null | head -40 || echo "无 toolchain 目录"
+CLANG_FOUND=$(find "$THEOS/toolchain" -type f -name 'clang' 2>/dev/null | head -1)
+echo "找到 clang: $CLANG_FOUND"
+LD_FOUND=$(find "$THEOS/toolchain" -type f \( -name 'ld64' -o -name 'ld64.lld' -o -name 'ld' \) 2>/dev/null | head -1)
+echo "找到 ld: $LD_FOUND"
 
 echo "===== 3. 选 SDK ====="
+echo "== sdks 目录 =="
+ls -d "$THEOS/sdks/"* 2>/dev/null | head -10 || echo "(空)"
+if ! ls -d "$THEOS/sdks/"*.sdk >/dev/null 2>&1; then
+  echo "== 重新获取 SDK（使用 tarball，避免 clone 失败）=="
+  mkdir -p "$THEOS/sdks"
+  curl -L -m 600 -o /tmp/sdk.tar.gz "https://github.com/theos/sdks/archive/refs/heads/master.tar.gz" || true
+  if [ -s /tmp/sdk.tar.gz ]; then
+    tar -xzf /tmp/sdk.tar.gz -C "$THEOS/sdks" --strip-components=1 || true
+  fi
+  ls -d "$THEOS/sdks/"*.sdk 2>/dev/null | head -5 || echo "(仍然为空)"
+fi
 for c in "$THEOS/sdks/iPhoneOS16.5.sdk" "$THEOS/sdks/iPhoneOS15.6.sdk"; do
   [ -d "$c" ] && SDK="$c"
 done
@@ -53,9 +68,7 @@ done
 echo "SDK=$SDK"
 
 echo "===== 4. 选编译器 ====="
-for c in "$THEOS/toolchain/linux/iphone/bin/clang" "$THEOS/toolchain/linux/iphone/bin/clang++"; do
-  [ -x "$c" ] && TC="$c" && break
-done
+TC="$CLANG_FOUND"
 echo "clang=$TC"
 [ -n "$TC" ] && "$TC" --version | head -3
 
@@ -67,10 +80,7 @@ if [ -n "$TC" ] && [ -n "$SDK" ]; then
       -Iengine -Wno-deprecated-declarations -o "out/$(basename "$f" .m).o" "$f" || exit 1
   done
 
-  LD=""
-  for c in "$THEOS/toolchain/linux/iphone/bin/ld64" "$THEOS/toolchain/linux/iphone/bin/ld" "$THEOS/toolchain/linux/iphone/bin/ld64.lld"; do
-    [ -x "$c" ] && LD="$c" && break
-  done
+  LD="$LD_FOUND"
   echo "ld=$LD"
   "$LD" -dylib -arch arm64e -platform_version ios 15.0 16.5 \
       -syslibroot "$SDK" -undefined dynamic_lookup \
