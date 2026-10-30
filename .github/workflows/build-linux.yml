@@ -1,0 +1,79 @@
+name: build-linux
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-linux.yml'
+      - 'engine/**'
+  workflow_dispatch:
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git make unzip xz-utils ldid
+
+      - name: 安装 Theos（Linux 工具链）
+        run: |
+          export THEOS=$HOME/theos
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          git clone --depth 1 https://github.com/theos/sdks.git $THEOS/sdks || true
+          ls $THEOS | head
+          ls $THEOS/toolchain 2>/dev/null || echo "toolchain 目录不存在"
+          ls $THEOS/sdks 2>/dev/null | head
+
+      - name: 诊断工具链
+        continue-on-error: true
+        run: |
+          export THEOS=$HOME/theos
+          echo "== PATH =="; echo $PATH
+          ls -l $THEOS/toolchain/linux/iphone/bin 2>/dev/null | head -20 || echo "无 linux 工具链目录"
+          which clang || true; clang --version || true
+          for t in $THEOS/toolchain/linux/iphone/bin/*; do echo "  $t"; done 2>/dev/null | head -20
+
+      - name: 尝试编译 arm64e 引擎
+        continue-on-error: true
+        run: |
+          set -x
+          export THEOS=$HOME/theos
+          TC=$THEOS/toolchain/linux/iphone/bin
+          SDK=$THEOS/sdks/iPhoneOS16.5.sdk
+          ls $SDK >/dev/null 2>&1 || SDK=$(ls -d $THEOS/sdks/*.sdk | head -1)
+          echo "SDK=$SDK"
+          mkdir -p out
+          for f in engine/*.m; do
+            $TC/clang -c -fobjc-arc -O2 -isysroot "$SDK" -target arm64e-apple-ios15.0 \
+              -Iengine -Wno-deprecated-declarations -o "out/$(basename "$f" .m).o" "$f" || exit 1
+          done
+          $TC/ld -dylib -arch arm64e -platform_version ios 15.0 16.5 \
+            -syslibroot "$SDK" -undefined dynamic_lookup \
+            -o out/ThemeBoardEngine.dylib out/*.o || \
+          $TC/ld64 -dylib -arch arm64e -platform_version ios 15.0 16.5 \
+            -syslibroot "$SDK" -undefined dynamic_lookup \
+            -o out/ThemeBoardEngine.dylib out/*.o || exit 1
+          file out/ThemeBoardEngine.dylib
+          python3 - <<'PY'
+          import struct
+          p='out/ThemeBoardEngine.dylib'
+          d=open(p,'rb').read()
+          cpu,sub=struct.unpack('<ii',d[4:12])
+          print("size",len(d),"cpu",hex(cpu&0xffffffff),"sub",hex(sub&0xffffffff))
+          nc=struct.unpack('<I',d[16:20])[0]; off=32; cmds=[]
+          for _ in range(nc):
+              c,sz=struct.unpack('<II',d[off:off+8]); cmds.append(c); off+=sz
+          print("chained:", 0x80000034 in cmds, "dyld_info_only:", 0x80000022 in cmds, "codesig:", 0x1d in cmds)
+          PY
+
+      - name: 上传诊断产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-linux
+          path: |
+            out/**
+          if-no-files-found: warn

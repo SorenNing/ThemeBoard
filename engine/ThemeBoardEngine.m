@@ -32,10 +32,17 @@ static NSUInteger gServe, gMiss;
 
 #pragma mark - 日志
 
+static NSString *TBProcName(void) {
+    static NSString *name = nil;
+    if (!name) name = [[NSProcessInfo processInfo] processName] ?: @"?";
+    return name;
+}
+
 static void TBLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
+    NSString *msg = [NSString stringWithFormat:@"[%@] %@", TBProcName(), body];
 
     if (!gLogPath) {
         NSFileManager *fm = [NSFileManager defaultManager];

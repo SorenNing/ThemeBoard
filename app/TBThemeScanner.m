@@ -205,8 +205,7 @@ static NSArray<NSString *> *TBRootCandidates(void) {
         for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
             if ([item hasPrefix:@"."]) continue;
             NSString *rel = [dir substringFromIndex:MIN(root.length, dir.length)];
-            [out appendFormat:@"%@/%@
-", rel, item];
+            [out appendFormat:@"%@/%@\n", rel, item];
             if (++n >= limit) break;
             BOOL d = NO;
             NSString *sub = [dir stringByAppendingPathComponent:item];

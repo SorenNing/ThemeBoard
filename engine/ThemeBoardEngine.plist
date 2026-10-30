@@ -4,8 +4,17 @@
 <dict>
 	<key>Filter</key>
 	<dict>
-		<key>Mode</key>
-		<string>Any</string>
+		<key>Executables</key>
+		<array>
+			<string>SpringBoard</string>
+			<string>iconservicesagent</string>
+			<string>Preferences</string>
+			<string>usernotificationsd</string>
+		</array>
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.UIKit</string>
+		</array>
 	</dict>
 </dict>
 </plist>
