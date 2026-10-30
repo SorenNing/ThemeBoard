@@ -1,5 +1,5 @@
-// ThemeBoardEngine — 注入 SpringBoard / iconservicesagent 的主题引擎
-// 先做"可观测"：每条取图链都记日志，命中主题图才替换。
+// ThemeBoardEngine v0.2 — 按 iOS 17.2 真实私有头文件重写
+// 依据：headers/17.2/{SBHIconImageCache,SBIcon,SBLeafIcon,SBApplicationIcon,SBHIconManager}.h
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -11,30 +11,35 @@ static NSString *const kNotify = @"com.ning.themeboard.changed";
 static NSString *const kActiveTheme = @"ActiveTheme";
 static NSString *const kEnabled = @"Enabled";
 
+#pragma mark - 结构（照头文件抄，ABI 必须一致）
+
+typedef struct {
+    CGSize size;      // 16B
+    double scale;     // 8B
+    double ratio;     // 8B
+} TBImageInfo;        // 32B，HFA(4×double)，走 d0-d3
+
+#pragma mark - 状态
+
 static NSString *gLogPath;
-static NSMutableDictionary<NSString *, NSString *> *gIndex;   // bid -> png 路径
+static NSMutableDictionary<NSString *, NSString *> *gIndex;
 static NSString *gIndexTheme;
+static NSMutableSet<NSValue *> *gCaches;      // 见过的缓存实例
 static NSLock *gLock;
-static BOOL gLoggedIndex;
-static NSUInteger gServeCount, gMissCount;
+static NSUInteger gServe, gMiss;
 
 #pragma mark - 日志
 
 static void TBLog(NSString *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
+    va_list ap; va_start(ap, fmt);
     NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
 
     if (!gLogPath) {
         NSFileManager *fm = [NSFileManager defaultManager];
-        NSArray *dirs = @[@"/var/jb/var/mobile/Library/ThemeBoard", @"/var/mobile/Library/ThemeBoard"];
-        for (NSString *d in dirs) {
+        for (NSString *d in @[@"/var/jb/var/mobile/Library/ThemeBoard", @"/var/mobile/Library/ThemeBoard"]) {
             [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:NULL];
-            if ([fm isWritableFileAtPath:d]) {
-                gLogPath = [d stringByAppendingPathComponent:@"engine.log"];
-                break;
-            }
+            if ([fm isWritableFileAtPath:d]) { gLogPath = [d stringByAppendingPathComponent:@"engine.log"]; break; }
         }
     }
     NSLog(@"[ThemeBoard] %@", msg);
@@ -47,33 +52,22 @@ static void TBLog(NSString *fmt, ...) {
     if (!fh) {
         [line writeToFile:gLogPath atomically:NO encoding:NSUTF8StringEncoding error:NULL];
     } else {
-        @try {
-            [fh seekToEndOfFile];
-            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-            [fh closeFile];
-        } @catch (NSException *e) {}
+        @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
+        @catch (NSException *e) {}
     }
 }
 
-#pragma mark - 设置
+#pragma mark - 设置 / 索引
 
 static id TBPref(NSString *key) {
-    CFPropertyListRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key,
-                                                    (__bridge CFStringRef)kDomain);
-    return (__bridge_transfer id)v;
+    return (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key,
+                                                           (__bridge CFStringRef)kDomain);
 }
-
-static BOOL TBEnabled(void) {
-    id v = TBPref(kEnabled);
-    return v ? [v boolValue] : YES;
-}
-
+static BOOL TBEnabled(void) { id v = TBPref(kEnabled); return v ? [v boolValue] : YES; }
 static NSString *TBActiveTheme(void) {
     id v = TBPref(kActiveTheme);
     return [v isKindOfClass:[NSString class]] ? v : nil;
 }
-
-#pragma mark - 主题索引
 
 static NSArray<NSString *> *TBRoots(void) {
     return @[@"/var/jb/Library/Themes", @"/var/mobile/Library/Themes",
@@ -81,7 +75,7 @@ static NSArray<NSString *> *TBRoots(void) {
 }
 
 static NSString *TBThemeDir(NSString *name) {
-    if (name.length == 0) return nil;
+    if (!name.length) return nil;
     for (NSString *r in TBRoots()) {
         NSString *p = [r stringByAppendingPathComponent:name];
         BOOL isDir = NO;
@@ -93,9 +87,8 @@ static NSString *TBThemeDir(NSString *name) {
 static NSString *TBStripName(NSString *file) {
     NSString *s = [file stringByDeletingPathExtension];
     if ([s hasSuffix:@"@2x"] || [s hasSuffix:@"@3x"]) s = [s substringToIndex:s.length - 3];
-    for (NSString *suf in @[@"-large", @"-small", @"-76", @"-60", @"-40"]) {
+    for (NSString *suf in @[@"-large", @"-small", @"-76", @"-60", @"-40"])
         if ([s hasSuffix:suf]) s = [s substringToIndex:s.length - suf.length];
-    }
     NSRange t = [s rangeOfString:@"~"];
     if (t.location != NSNotFound) s = [s substringToIndex:t.location];
     return s;
@@ -110,22 +103,19 @@ static void TBLoadIndex(void) {
     NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL];
     NSMutableDictionary *map = [NSMutableDictionary dictionary];
     NSMutableDictionary *rank = [NSMutableDictionary dictionary];
-
     for (NSString *f in files) {
         if (![[f pathExtension].lowercaseString isEqualToString:@"png"]) continue;
         NSString *bid = TBStripName(f);
-        if (bid.length == 0) continue;
+        if (!bid.length) continue;
         NSInteger r = [f hasSuffix:@"@3x.png"] ? 3 : ([f hasSuffix:@"@2x.png"] ? 2 : 1);
         if ([rank[bid] integerValue] >= r) continue;
         map[bid] = [dir stringByAppendingPathComponent:f];
         rank[bid] = @(r);
     }
+    BOOL first = (gIndex == nil);
     gIndex = map;
     gIndexTheme = theme;
-    if (!gLoggedIndex) {
-        gLoggedIndex = YES;
-        TBLog(@"index %@ -> %lu 个图标 (%@)", theme, (unsigned long)map.count, dir);
-    }
+    if (first) TBLog(@"索引 %@ → %lu 个图标 (%@)", theme, (unsigned long)map.count, dir);
 }
 
 static UIImage *TBImageForBundle(NSString *bid) {
@@ -138,150 +128,190 @@ static UIImage *TBImageForBundle(NSString *bid) {
     return img;
 }
 
-#pragma mark - hook 工具
-
-static IMP TBHookInstance(Class cls, NSString *selName, IMP replacement, const char *tag) {
-    if (!cls) { TBLog(@"hook %s: class 缺失", tag); return NULL; }
-    SEL sel = NSSelectorFromString(selName);
-    Method m = class_getInstanceMethod(cls, sel);
-    if (!m) { TBLog(@"hook %@ %@: 方法不存在", NSStringFromClass(cls), selName); return NULL; }
-    IMP orig = method_getImplementation(m);
-    method_setImplementation(m, replacement);
-    TBLog(@"hook %@ %@ ok", NSStringFromClass(cls), selName);
-    return orig;
-}
-
-static IMP TBHookClass(Class cls, NSString *selName, IMP replacement, const char *tag) {
-    if (!cls) { TBLog(@"hook %s: class 缺失", tag); return NULL; }
-    SEL sel = NSSelectorFromString(selName);
-    Method m = class_getClassMethod(cls, sel);
-    if (!m) { TBLog(@"hook %@ +%@: 方法不存在", NSStringFromClass(cls), selName); return NULL; }
-    IMP orig = method_getImplementation(m);
-    method_setImplementation(m, replacement);
-    TBLog(@"hook +%@ %@ ok", NSStringFromClass(cls), selName);
-    return orig;
-}
+#pragma mark - 取 bundleID
 
 static NSString *TBBIDFromIcon(id icon) {
     if (!icon) return nil;
-    @try {
-        if ([icon respondsToSelector:NSSelectorFromString(@"leafIdentifier")]) {
-            id v = [icon valueForKey:@"leafIdentifier"];
-            if ([v isKindOfClass:[NSString class]]) return v;
-        }
-        if ([icon respondsToSelector:NSSelectorFromString(@"applicationBundleID")]) {
-            id v = [icon valueForKey:@"applicationBundleID"];
-            if ([v isKindOfClass:[NSString class]]) return v;
-        }
-        if ([icon respondsToSelector:NSSelectorFromString(@"bundleIdentifier")]) {
-            id v = [icon valueForKey:@"bundleIdentifier"];
-            if ([v isKindOfClass:[NSString class]]) return v;
-        }
-    } @catch (NSException *e) {}
+    static NSArray *paths = nil;
+    if (!paths) paths = @[@"leafIdentifier", @"applicationBundleID", @"bundleIdentifier"];
+    for (NSString *k in paths) {
+        @try {
+            if (![icon respondsToSelector:NSSelectorFromString(k)]) continue;
+            id v = [icon valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && [v length]) return v;
+        } @catch (NSException *e) {}
+    }
     return nil;
 }
 
-#pragma mark - 具体 hook
+#pragma mark - hook 工具
 
-typedef id (*IconFn)(id, SEL, id);
-typedef id (*IconOptFn)(id, SEL, id, unsigned long);
-typedef UIImage *(*UIImageIconFn)(id, SEL, NSString *, int, double);
+static IMP TBHook(Class cls, NSString *selName, IMP repl, const char *tag) {
+    if (!cls) { TBLog(@"· %s: 类不存在", tag); return NULL; }
+    Method m = class_getInstanceMethod(cls, NSSelectorFromString(selName));
+    if (!m) { TBLog(@"· %s: 方法不存在(%@)", tag, selName); return NULL; }
+    IMP orig = method_getImplementation(m);
+    method_setImplementation(m, repl);
+    TBLog(@"✓ hook %@ -%@", NSStringFromClass(cls), selName);
+    return orig;
+}
 
-static IconFn oImageForIcon, oCachedForIcon;
-static IconOptFn oRealForIconOptions;
-static UIImageIconFn oUIImageIcon;
+static IMP TBHookClass(Class cls, NSString *selName, IMP repl, const char *tag) {
+    if (!cls) { TBLog(@"· %s: 类不存在", tag); return NULL; }
+    Method m = class_getClassMethod(cls, NSSelectorFromString(selName));
+    if (!m) { TBLog(@"· %s: 类方法不存在(%@)", tag, selName); return NULL; }
+    IMP orig = method_getImplementation(m);
+    method_setImplementation(m, repl);
+    TBLog(@"✓ hook %@ +%@", NSStringFromClass(cls), selName);
+    return orig;
+}
+
+static void TBRemember(id cache) {
+    if (!cache) return;
+    [gLock lock];
+    if (!gCaches) gCaches = [NSMutableSet set];
+    [gCaches addObject:[NSValue valueWithPointer:(__bridge const void *)cache]];
+    [gLock unlock];
+}
+
+#pragma mark - hook 实现
+
+typedef id (*FnIcon)(id, SEL, id);
+typedef id (*FnIconOpt)(id, SEL, id, unsigned long long);
+typedef id (*FnImageForIcon)(id, SEL, id, id);
+typedef id (*FnGen)(id, SEL, TBImageInfo);
+typedef id (*FnGenSize)(id, SEL, CGSize, double, BOOL, id);
+
+static FnIcon o_imageForIcon, o_cachedForIcon, o_unmaskedForIcon;
+static FnIconOpt o_imageForIconOpt, o_realForIconOpt, o_unmaskedForIconOpt;
+static FnImageForIcon o_cacheImageForIcon;
+static FnGen o_generateIconImageWithInfo, o_genericIconImage;
+static FnGenSize o_iconImageOfSize;
 
 static id tb_imageForIcon(id self, SEL _cmd, id icon) {
+    TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
     UIImage *img = TBImageForBundle(bid);
-    if (img) {
-        gServeCount++;
-        TBLog(@"serve cache %@", bid);
-        return img;
-    }
-    gMissCount++;
-    if (bid) TBLog(@"miss %@", bid);
-    return oImageForIcon ? oImageForIcon(self, _cmd, icon) : nil;
+    if (img) { gServe++; TBLog(@"serve imageForIcon %@", bid); return img; }
+    gMiss++; TBLog(@"miss %@", bid ?: @"(无bid)");
+    return o_imageForIcon ? o_imageForIcon(self, _cmd, icon) : nil;
+}
+
+static id tb_imageForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
+    TBRemember(self);
+    NSString *bid = TBBIDFromIcon(icon);
+    UIImage *img = TBImageForBundle(bid);
+    if (img) { gServe++; TBLog(@"serve imageForIcon:options: %@ opt=%llu", bid, opt); return img; }
+    return o_imageForIconOpt ? o_imageForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
 static id tb_cachedForIcon(id self, SEL _cmd, id icon) {
+    TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
     UIImage *img = TBImageForBundle(bid);
-    if (img) {
-        gServeCount++;
-        TBLog(@"serve cached %@", bid);
-        return img;
-    }
-    return oCachedForIcon ? oCachedForIcon(self, _cmd, icon) : nil;
+    if (img) { gServe++; TBLog(@"serve cachedImageForIcon %@", bid); return img; }
+    return o_cachedForIcon ? o_cachedForIcon(self, _cmd, icon) : nil;
 }
 
-static id tb_realForIconOptions(id self, SEL _cmd, id icon, unsigned long opts) {
+static id tb_realForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
+    TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
     UIImage *img = TBImageForBundle(bid);
-    if (img) {
-        gServeCount++;
-        TBLog(@"serve real %@", bid);
-        return img;
-    }
-    return oRealForIconOptions ? oRealForIconOptions(self, _cmd, icon, opts) : nil;
+    if (img) { gServe++; TBLog(@"serve realImageForIcon %@", bid); return img; }
+    return o_realForIconOpt ? o_realForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
-static UIImage *tb_uiimageIcon(id self, SEL _cmd, NSString *bid, int format, double scale) {
+static id tb_unmaskedForIcon(id self, SEL _cmd, id icon) {
+    TBRemember(self);
+    NSString *bid = TBBIDFromIcon(icon);
     UIImage *img = TBImageForBundle(bid);
-    if (img) {
-        gServeCount++;
-        TBLog(@"serve UIImage %@", bid);
-        return img;
-    }
-    return oUIImageIcon ? oUIImageIcon(self, _cmd, bid, format, scale) : nil;
+    if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon %@", bid); return img; }
+    return o_unmaskedForIcon ? o_unmaskedForIcon(self, _cmd, icon) : nil;
+}
+
+static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
+    TBRemember(self);
+    NSString *bid = TBBIDFromIcon(icon);
+    UIImage *img = TBImageForBundle(bid);
+    if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon:options %@", bid); return img; }
+    return o_unmaskedForIconOpt ? o_unmaskedForIconOpt(self, _cmd, icon, opt) : nil;
+}
+
+/// 缓存落盘的那一刻换掉图 —— 这样所有后续消费者（含变体缓存）拿到的都是主题图
+static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
+    TBRemember(self);
+    NSString *bid = TBBIDFromIcon(icon);
+    UIImage *img = TBImageForBundle(bid);
+    if (img) { gServe++; TBLog(@"fill cacheImage %@", bid); }
+    return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, img ?: image, icon) : nil;
+}
+
+static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
+    NSString *bid = TBBIDFromIcon(self);
+    UIImage *img = TBImageForBundle(bid);
+    if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
+    return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
+}
+
+static id tb_iconImageOfSize(id self, SEL _cmd, CGSize size, double scale, BOOL gracefully, id drawing) {
+    TBRemember(self);
+    // 这里拿不到 icon，只做观测：确认这条链是否真的被走
+    static int once = 0;
+    if (once < 3) { once++; TBLog(@"观测 _iconImageOfSize:%.0fx%.0f scale=%.1f", size.width, size.height, scale); }
+    return o_iconImageOfSize ? o_iconImageOfSize(self, _cmd, size, scale, gracefully, drawing) : nil;
 }
 
 #pragma mark - 安装
 
-static void TBInstallHooks(void) {
+static void TBInstall(void) {
     Class cache = NSClassFromString(@"SBHIconImageCache");
-    Class appIcon = NSClassFromString(@"SBApplicationIcon");
-    Class leaf = NSClassFromString(@"SBLeafIcon");
-    Class uiimg = [UIImage class];
-
-    TBLog(@"环境: cache=%@ appIcon=%@ leaf=%@", cache ? @"有" : @"无", appIcon ? @"有" : @"无", leaf ? @"有" : @"无");
+    Class icon  = NSClassFromString(@"SBIcon");
+    Class leaf  = NSClassFromString(@"SBLeafIcon");
+    TBLog(@"类: cache=%@ icon=%@ leaf=%@", cache ? @"有" : @"无", icon ? @"有" : @"无", leaf ? @"有" : @"无");
 
     if (cache) {
-        oImageForIcon = (IconFn)TBHookInstance(cache, @"imageForIcon:", (IMP)tb_imageForIcon, "cache.imageForIcon");
-        oCachedForIcon = (IconFn)TBHookInstance(cache, @"cachedImageForIcon:", (IMP)tb_cachedForIcon, "cache.cachedImageForIcon");
-        oRealForIconOptions = (IconOptFn)TBHookInstance(cache, @"realImageForIcon:options:", (IMP)tb_realForIconOptions, "cache.realImageForIcon");
+        o_imageForIcon        = (FnIcon)TBHook(cache, @"imageForIcon:", (IMP)tb_imageForIcon, "imageForIcon");
+        o_imageForIconOpt     = (FnIconOpt)TBHook(cache, @"imageForIcon:options:", (IMP)tb_imageForIconOpt, "imageForIcon:options");
+        o_cachedForIcon       = (FnIcon)TBHook(cache, @"cachedImageForIcon:", (IMP)tb_cachedForIcon, "cachedImageForIcon");
+        o_realForIconOpt      = (FnIconOpt)TBHook(cache, @"realImageForIcon:options:", (IMP)tb_realForIconOpt, "realImageForIcon:options");
+        o_unmaskedForIcon     = (FnIcon)TBHook(cache, @"unmaskedImageForIcon:", (IMP)tb_unmaskedForIcon, "unmaskedImageForIcon");
+        o_unmaskedForIconOpt  = (FnIconOpt)TBHook(cache, @"unmaskedImageForIcon:options:", (IMP)tb_unmaskedForIconOpt, "unmaskedImageForIcon:options");
+        o_cacheImageForIcon   = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
+        o_iconImageOfSize     = (FnGenSize)TBHook(cache, @"_iconImageOfSize:scale:failGracefully:drawing:", (IMP)tb_iconImageOfSize, "iconImageOfSize");
     }
-    if (appIcon) {
-        TBHookInstance(appIcon, @"generateIconImage:", (IMP)tb_imageForIcon, "appIcon.generateIconImage");
+    if (icon) {
+        o_generateIconImageWithInfo = (FnGen)TBHook(icon, @"generateIconImageWithInfo:", (IMP)tb_generateIconImageWithInfo, "generateIconImageWithInfo");
     }
-    oUIImageIcon = (UIImageIconFn)TBHookClass(uiimg, @"_applicationIconImageForBundleIdentifier:format:scale:",
-                                              (IMP)tb_uiimageIcon, "UIImage.icon");
 }
 
-#pragma mark - 生命周期
+#pragma mark - 刷新
 
-static void TBReload(CFNotificationCenterRef center, void *observer, CFNotificationName name,
-                     const void *object, CFDictionaryRef info) {
+static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
     [gLock lock];
     gIndex = nil;
-    gLoggedIndex = NO;
+    NSArray *caches = gCaches.allObjects;
     [gLock unlock];
-    TBLog(@"设置变更，索引重建");
+    TBLog(@"设置变更：重建索引，清理 %lu 个缓存", (unsigned long)caches.count);
+
+    for (NSValue *v in caches) {
+        id cache = (__bridge id)v.pointerValue;
+        SEL sel = NSSelectorFromString(@"purgeAllCachedImages");
+        if ([cache respondsToSelector:sel]) {
+            ((void (*)(id, SEL))objc_msgSend)(cache, sel);
+        }
+    }
 }
 
 __attribute__((constructor))
 static void TBMain(void) {
     gLock = [[NSLock alloc] init];
-    TBLog(@"=== ThemeBoardEngine 加载 pid=%d ===", getpid());
-    TBLog(@"当前主题: %@ / 开关: %@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
-
-    TBInstallHooks();
-
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL,
-                                    TBReload, (__bridge CFStringRef)kNotify, NULL,
+    TBLog(@"=== ThemeBoardEngine 0.2 加载 pid=%d ===", getpid());
+    TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
+    TBInstall();
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBReload,
+                                    (__bridge CFStringRef)kNotify, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 
-    // 心跳：每分钟刷一次日志 mtime，App 端据此判断引擎在跑
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         while (1) {
             sleep(60);
