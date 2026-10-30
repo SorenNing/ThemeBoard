@@ -3,6 +3,9 @@
 /// 动态色（浅色 / 深色各一份）
 UIColor *TBDynamicColor(UIColor *light, UIColor *dark);
 
+/// 容器级磨砂（放在导航控制器 view 的最底层，页面本身保持透明）
+void TBAttachFrostContainer(UIView *host);
+
 /// 窗口级磨砂底（唯一正确的位置：不会随内容滚动）
 void TBAttachWindowFrost(UIWindow *window);
 

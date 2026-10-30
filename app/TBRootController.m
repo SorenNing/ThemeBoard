@@ -38,6 +38,11 @@
         nav.navigationBar.translucent = YES;
     }
 
+    for (UINavigationController *nav in @[nav1, nav2, nav3]) {
+        nav.view.backgroundColor = [UIColor clearColor];
+        TBAttachFrostContainer(nav.view);
+    }
+
     self.pages = @[nav1, nav2, nav3];
 
     for (UIViewController *vc in self.pages) {

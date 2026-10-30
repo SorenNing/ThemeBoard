@@ -1,6 +1,7 @@
 #import "TBAppDelegate.h"
 #import "TBRootController.h"
 #import "TBGlass.h"
+#import "TBPrefs.h"
 
 @implementation TBAppDelegate
 
@@ -14,7 +15,18 @@ didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     // 背景铺在 window 上，导航栏/标签栏都透明，磨砂才不会被内容滚动带跑
     TBAttachWindowFrost(self.window);
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(applyAppearance)
+                                                 name:@"TBAppearanceChanged"
+                                               object:nil];
+    [self applyAppearance];
     return YES;
+}
+
+- (void)applyAppearance {
+    BOOL follow = [TBPrefs boolForKey:@"FollowSystem" defaultValue:YES];
+    self.window.overrideUserInterfaceStyle = follow ? UIUserInterfaceStyleUnspecified
+                                                    : UIUserInterfaceStyleLight;
 }
 
 @end

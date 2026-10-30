@@ -52,6 +52,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
            @{@"t": @"在文件管理器中打开主题目录", @"act": @"open"},
            @{@"t": @"重新扫描主题", @"act": @"rescan"},
            @{@"t": @"清除当前主题", @"act": @"clear"} ],
+        @[ @{@"t": @"跟随系统深色模式", @"k": @"FollowSystem", @"v": @YES, @"d": @"关掉则固定浅色"} ],
         @[ @{@"t": @"写日志", @"k": TBKeyLogEnabled, @"v": @YES},
            @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO},
            @{@"t": @"应用后清图标缓存（会注销，建议关）", @"k": @"PurgeCache", @"v": @NO} ],
@@ -65,7 +66,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         @"App 切换器": @"rectangle.stack", @"设置页图标": @"gearshape", @"分享面板": @"square.and.arrow.up",
         @"导入主题…": @"square.and.arrow.down", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
         @"重新扫描主题": @"arrow.triangle.2.circlepath", @"清除当前主题": @"trash",
-        @"写日志": @"doc.text", @"安全模式（只记录，不换图）": @"exclamationmark.shield",
+        @"跟随系统深色模式": @"circle.lefthalf.filled", @"写日志": @"doc.text", @"安全模式（只记录，不换图）": @"exclamationmark.shield",
         @"应用后清图标缓存（会注销，建议关）": @"arrow.clockwise",
     };
     NSMutableArray *patched = [NSMutableArray array];
@@ -129,6 +130,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     cell.contentView.backgroundColor = [UIColor clearColor];
     cell.backgroundView = TBGlassCellBG(12);
     cell.selectedBackgroundView = nil;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.textLabel.text = row[@"t"];
     if (row[@"icon"]) {
         cell.imageView.image = [UIImage systemImageNamed:row[@"icon"]];
@@ -178,6 +180,9 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     NSDictionary *item = self.model[section][row];
     [TBPrefs setBool:sw.on forKey:item[@"k"]];
     [TBPrefs notifyChanged];
+    if ([item[@"k"] isEqualToString:@"FollowSystem"]) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"TBAppearanceChanged" object:nil];
+    }
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {

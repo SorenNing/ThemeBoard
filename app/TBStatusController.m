@@ -111,6 +111,11 @@
     cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
 
     if (ip.section == 0) {
+        NSArray *syms = @[@"waveform.path.ecg", @"paintpalette", @"square.grid.2x2"];
+        if (ip.row < syms.count) {
+            cell.imageView.image = [UIImage systemImageNamed:syms[ip.row]];
+            cell.imageView.tintColor = [UIColor secondaryLabelColor];
+        }
         if (ip.row == 0) {
             cell.textLabel.text = self.engineState;
             cell.textLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
@@ -140,13 +145,17 @@
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         }
     } else if (ip.section == 1) {
-        NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion]],
-                          @[@"机型", [[UIDevice currentDevice] model]],
-                          @[@"版本", @"0.8.1"]];
+        NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
+                          @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
+                          @[@"版本", @"0.9.0", @"number"]];
+        cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
+        cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];
         cell.detailTextLabel.text = rows[ip.row][1];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else {
+        cell.imageView.image = [UIImage systemImageNamed:@"doc.text"];
+        cell.imageView.tintColor = [UIColor secondaryLabelColor];
         UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(14, 10, t.bounds.size.width - 68, 280)];
         tv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         tv.backgroundColor = [UIColor clearColor];

@@ -118,11 +118,11 @@
 
 - (void)buildGrid {
     UICollectionViewFlowLayout *fl = [[UICollectionViewFlowLayout alloc] init];
-    CGFloat w = ([UIScreen mainScreen].bounds.size.width - 16 * 2 - 12 * 2) / 3.0;
-    fl.itemSize = CGSizeMake(w, w + 26);
-    fl.minimumInteritemSpacing = 12;
-    fl.minimumLineSpacing = 16;
-    fl.sectionInset = UIEdgeInsetsMake(14, 16, 30, 16);
+    CGFloat w = ([UIScreen mainScreen].bounds.size.width - 14 * 2 - 10 * 3) / 4.0;
+    fl.itemSize = CGSizeMake(w, w + 22);
+    fl.minimumInteritemSpacing = 10;
+    fl.minimumLineSpacing = 14;
+    fl.sectionInset = UIEdgeInsetsMake(12, 14, 30, 14);
 
     self.grid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:fl];
     self.grid.translatesAutoresizingMaskIntoConstraints = NO;
@@ -212,7 +212,7 @@
     for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
 
     NSString *bid = self.bids[indexPath.row];
-    CGFloat w = ([UIScreen mainScreen].bounds.size.width - 16 * 2 - 12 * 2) / 3.0;
+    CGFloat w = ([UIScreen mainScreen].bounds.size.width - 14 * 2 - 10 * 3) / 4.0;
 
     UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, w, w)];
     iv.image = [self.theme imageForBundleID:bid];
@@ -222,10 +222,10 @@
     iv.clipsToBounds = YES;
     [cell.contentView addSubview:iv];
 
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, w + 5, w, 20)];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, w + 4, w, 16)];
     NSString *name = [TBAppInfo displayNameForBundleID:bid];
     label.text = name.length ? name : [bid componentsSeparatedByString:@"."].lastObject;
-    label.font = [UIFont systemFontOfSize:11];
+    label.font = [UIFont systemFontOfSize:9.5];
     label.textColor = [UIColor secondaryLabelColor];
     label.textAlignment = NSTextAlignmentCenter;
     label.lineBreakMode = NSLineBreakByTruncatingTail;
