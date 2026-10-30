@@ -57,7 +57,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
            @{@"t": @"清除当前主题", @"act": @"clear"} ],
         @[ @{@"t": @"写日志", @"k": TBKeyLogEnabled, @"v": @YES},
            @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO},
-           @{@"t": @"应用后清图标缓存", @"k": @"PurgeCache", @"v": @YES} ],
+           @{@"t": @"应用后清图标缓存（会注销，建议关）", @"k": @"PurgeCache", @"v": @NO} ],
     ];
 }
 
@@ -92,7 +92,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         }
         return s;
     }
-    if (section == 4) return @"「应用后清图标缓存」关掉后，换主题要自己重启一次桌面才看得到效果，但最不容易出问题。";
+    if (section == 4) return @"「应用后清图标缓存」实测会让 SpringBoard 崩溃并注销，默认已关闭。关着时换主题：新绘制的图标立刻生效，已在缓存里的图标要等它自然刷新或手动重启一次桌面。";
     return nil;
 }
 
