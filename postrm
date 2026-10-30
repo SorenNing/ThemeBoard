@@ -5,5 +5,4 @@ if [ -x /var/jb/usr/bin/uicache ]; then
 elif [ -x /usr/bin/uicache ]; then
     /usr/bin/uicache -u "$APP" >/dev/null 2>&1 || true
 fi
-killall -HUP SpringBoard 2>/dev/null || true
 exit 0

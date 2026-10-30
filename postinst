@@ -11,7 +11,5 @@ fi
 if [ "$DONE" = "0" ] && [ -x /usr/bin/uicache ]; then
     /usr/bin/uicache -p "$APP" >/dev/null 2>&1 && DONE=1
 fi
-if [ "$DONE" = "0" ]; then
-    killall -HUP SpringBoard 2>/dev/null || true
-fi
+# 找不到 uicache 也不注销：等用户自己重启桌面
 exit 0

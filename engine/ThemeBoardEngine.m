@@ -291,6 +291,29 @@ static void TBInstall(void) {
 
 #pragma mark - 刷新
 
+/// 让 SpringBoard 自己重绘桌面图标（不注销）
+static void TBRefreshSpringBoard(void) {
+    Class sc = NSClassFromString(@"SBIconController");
+    if (sc) {
+        @try {
+            id ctrl = ((id (*)(id, SEL))objc_msgSend)(sc, NSSelectorFromString(@"sharedInstance"));
+            SEL selMgr = NSSelectorFromString(@"iconManager");
+            if (ctrl && [ctrl respondsToSelector:selMgr]) {
+                id mgr = ((id (*)(id, SEL))objc_msgSend)(ctrl, selMgr);
+                SEL selNote = NSSelectorFromString(@"noteIconStateChangedExternally");
+                if (mgr && [mgr respondsToSelector:selNote]) {
+                    ((void (*)(id, SEL))objc_msgSend)(mgr, selNote);
+                    TBLog(@"已通知 SpringBoard 刷新图标");
+                    return;
+                }
+            }
+        } @catch (NSException *e) {
+            TBLog(@"刷新失败: %@", e.reason);
+        }
+    }
+    TBLog(@"· 没有找到 iconManager，图标要等下次重绘");
+}
+
 static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
     [gLock lock];
     gIndex = nil;
@@ -305,6 +328,11 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
             ((void (*)(id, SEL))objc_msgSend)(cache, sel);
         }
     }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        TBRefreshSpringBoard();
+    });
 }
 
 __attribute__((constructor))

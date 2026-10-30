@@ -1,6 +1,6 @@
 Package: com.ning.themeboard
 Name: ThemeBoard
-Version: 0.3.1
+Version: 0.4.0
 Architecture: iphoneos-arm64e
 Description: 图标主题管理与应用。兼容 SnowBoard / Anemone 的 IconBundles 主题格式，浏览、预览、一键应用。
 Maintainer: Ning

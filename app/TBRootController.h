@@ -1,4 +1,4 @@
 #import <UIKit/UIKit.h>
 
-@interface TBRootController : UITabBarController
+@interface TBRootController : UIViewController
 @end
