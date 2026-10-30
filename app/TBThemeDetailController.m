@@ -28,7 +28,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    TBAttachFrost(self.view);
+    self.view.backgroundColor = [UIColor clearColor];
     self.title = self.theme.name;
 
     [self.theme loadIndex];
@@ -63,6 +63,15 @@
     card.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:card];
 
+    UIImageView *cover = [[UIImageView alloc] init];
+    cover.translatesAutoresizingMaskIntoConstraints = NO;
+    cover.image = [self.theme coverImageWithSize:120];
+    cover.contentMode = UIViewContentModeScaleAspectFit;
+    cover.layer.cornerRadius = 12;
+    cover.layer.cornerCurve = kCACornerCurveContinuous;
+    cover.clipsToBounds = YES;
+    [card addSubview:cover];
+
     UILabel *count = [[UILabel alloc] init];
     count.translatesAutoresizingMaskIntoConstraints = NO;
     count.text = [NSString stringWithFormat:@"%lu 个图标", (unsigned long)self.allBids.count];
@@ -87,11 +96,16 @@
         [card.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
         [card.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
 
+        [cover.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
+        [cover.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
+        [cover.widthAnchor constraintEqualToConstant:60],
+        [cover.heightAnchor constraintEqualToConstant:60],
+
         [count.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
-        [count.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [count.leadingAnchor constraintEqualToAnchor:cover.trailingAnchor constant:14],
 
         [self.coverageLabel.topAnchor constraintEqualToAnchor:count.bottomAnchor constant:2],
-        [self.coverageLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18],
+        [self.coverageLabel.leadingAnchor constraintEqualToAnchor:cover.trailingAnchor constant:14],
         [self.coverageLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
 
         [self.applyButton.topAnchor constraintEqualToAnchor:self.coverageLabel.bottomAnchor constant:14],
@@ -174,10 +188,14 @@
     if (q.length == 0) {
         self.bids = self.allBids;
     } else {
+        NSString *q2 = [q lowercaseString];
         self.bids = [self.allBids filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *bid, NSDictionary *b) {
-            if ([bid rangeOfString:q options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+            if ([[bid lowercaseString] rangeOfString:q2].location != NSNotFound) return YES;
+            NSString *tail = [[bid componentsSeparatedByString:@"."] lastObject];
+            if ([[tail lowercaseString] rangeOfString:q2].location != NSNotFound) return YES;
             NSString *name = [TBAppInfo displayNameForBundleID:bid];
-            return name && [name rangeOfString:q options:NSCaseInsensitiveSearch].location != NSNotFound;
+            if (name && [[name lowercaseString] rangeOfString:q2].location != NSNotFound) return YES;
+            return NO;
         }]];
     }
     [self.grid reloadData];

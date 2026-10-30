@@ -145,8 +145,14 @@
         [nav popToRootViewControllerAnimated:YES];
         return;
     }
-    self.pages[self.current].view.hidden = YES;
-    self.pages[idx].view.hidden = NO;
+    UIViewController *old = self.pages[self.current];
+    UIViewController *now = self.pages[idx];
+    now.view.hidden = NO;
+    [now.view setNeedsLayout];
+    [now.view layoutIfNeeded];
+    old.view.hidden = YES;
+    old.view.alpha = 1.0;
+    now.view.alpha = 1.0;
     self.current = idx;
     [self refreshDock];
     UIImpactFeedbackGenerator *g = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];

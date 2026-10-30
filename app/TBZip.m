@@ -10,7 +10,7 @@ static uint32_t rd32(const uint8_t *p) {
 @implementation TBZip
 
 + (BOOL)unzipFileAtPath:(NSString *)zipPath toDirectory:(NSString *)dstDir error:(NSError **)error {
-    NSData *data = [NSData dataWithContentsOfFile:zipPath options:0 error:NULL];
+    NSData *data = [NSData dataWithContentsOfFile:zipPath options:NSDataReadingMappedIfSafe error:NULL];
     if (!data.length) {
         NSString *msg = [NSString stringWithFormat:@"读不到 zip（%@，errno=%d）", zipPath, errno];
         if (error) *error = [NSError errorWithDomain:@"TBZip" code:1

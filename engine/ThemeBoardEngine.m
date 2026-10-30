@@ -274,8 +274,16 @@ static UIImage *TBImageForBundle(NSString *bid) {
 
     UIImage *img = [UIImage imageWithContentsOfFile:path];
     if (img) {
-        img = TBDynamicIcon(img, bid);
-        [gImageCache setObject:img forKey:bid];
+        // 日历/时钟带实时内容，不能进缓存，否则日期和指针会冻住
+        BOOL dynamic = [bid isEqualToString:@"com.apple.mobilecal"] ||
+                       [bid isEqualToString:@"com.apple.mobiletimer"];
+        if (dynamic) {
+            static int logged = 0;
+            if (logged < 20) { logged++; TBLog(@"dynamic %@", bid); }
+            img = TBDynamicIcon(img, bid);
+        } else {
+            [gImageCache setObject:img forKey:bid];
+        }
     }
     return img;
 }

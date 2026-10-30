@@ -59,6 +59,30 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
            @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO},
            @{@"t": @"应用后清图标缓存（会注销，建议关）", @"k": @"PurgeCache", @"v": @NO} ],
     ];
+
+    // 每行配一个 SF Symbol
+    NSDictionary *icons = @{
+        @"引擎状态": @"waveform.path.ecg", @"安装 / 更新引擎": @"arrow.down.circle",
+        @"重启桌面": @"arrow.clockwise.circle", @"测试 root 助手": @"wrench.and.screwdriver",
+        @"启用引擎": @"power", @"程序坞": @"dock.rectangle", @"文件夹预览": @"folder",
+        @"App 切换器": @"rectangle.stack", @"设置页图标": @"gearshape", @"分享面板": @"square.and.arrow.up",
+        @"导入主题…": @"square.and.arrow.down", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
+        @"重新扫描主题": @"arrow.triangle.2.circlepath", @"清除当前主题": @"trash",
+        @"写日志": @"doc.text", @"安全模式（只记录，不换图）": @"exclamationmark.shield",
+        @"应用后清图标缓存（会注销，建议关）": @"arrow.clockwise",
+    };
+    NSMutableArray *patched = [NSMutableArray array];
+    for (NSArray *sec in self.model) {
+        NSMutableArray *rows = [NSMutableArray array];
+        for (NSDictionary *row in sec) {
+            NSMutableDictionary *m = [row mutableCopy];
+            NSString *ic = icons[row[@"t"]];
+            if (ic) m[@"icon"] = ic;
+            [rows addObject:m];
+        }
+        [patched addObject:rows];
+    }
+    self.model = patched;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return self.model.count; }
@@ -109,6 +133,10 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     cell.backgroundView = TBGlassCellBG(12);
     cell.selectedBackgroundView = nil;
     cell.textLabel.text = row[@"t"];
+    if (row[@"icon"]) {
+        cell.imageView.image = [UIImage systemImageNamed:row[@"icon"]];
+        cell.imageView.tintColor = [UIColor secondaryLabelColor];
+    }
 
     if (row[@"k"]) {
         UISwitch *sw = [[UISwitch alloc] init];

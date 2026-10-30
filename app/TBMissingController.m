@@ -13,7 +13,7 @@
         NSMutableArray *miss = [NSMutableArray array];
         for (NSDictionary *app in [TBAppInfo installedApps]) {
             NSString *bid = app[@"bid"];
-            if ([bid hasPrefix:@"com.apple.WebKit"] || [bid hasPrefix:@"com.apple.SafariViewService"]) continue;
+            if ([bid hasPrefix:@"com.apple."]) continue;   // 系统自带的不算缺失
             if (![_theme hasIconForBundleID:bid]) [miss addObject:app];
         }
         _rows = miss;

@@ -1,6 +1,10 @@
 #import "TBThemeScanner.h"
 #import "TBZip.h"
+#import <spawn.h>
+extern char **environ;
 #import "TBZip.h"
+#import <spawn.h>
+extern char **environ;
 
 // 兼容 SnowBoard / Anemone 的放置位置；roothide 用 /var/jb 前缀
 // App 自己的容器目录 —— RootHide 下 /var/jb 对 App 不可见，只有这里一定可读写
@@ -192,8 +196,23 @@ static NSArray<NSString *> *TBRootCandidates(void) {
         NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
                          [NSString stringWithFormat:@"unzip-%@", [[NSUUID UUID] UUIDString]]];
         NSError *e = nil;
-        if (![TBZip unzipFileAtPath:url.path toDirectory:tmp error:&e]) {
-            if (error) *error = e;
+        BOOL unzipped = [TBZip unzipFileAtPath:url.path toDirectory:tmp error:&e];
+        if (!unzipped) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:NULL];
+            const char *cands[] = {"/var/jb/usr/bin/unzip", "/usr/bin/unzip"};
+            for (int i = 0; i < 2 && !unzipped; i++) {
+                if (![[NSFileManager defaultManager] isExecutableFileAtPath:@(cands[i])]) continue;
+                const char *argv[] = {cands[i], "-o", "-q", url.path.UTF8String, "-d", tmp.UTF8String, NULL};
+                pid_t pid; int st = 0;
+                if (posix_spawn(&pid, cands[i], NULL, NULL, (char *const *)argv, environ) == 0) {
+                    waitpid(pid, &st, 0);
+                    unzipped = (WEXITSTATUS(st) == 0);
+                }
+            }
+        }
+        if (!unzipped) {
+            if (error) *error = e ?: [NSError errorWithDomain:@"TB" code:5
+                userInfo:@{NSLocalizedDescriptionKey: @"解压失败：内置解析与 unzip 都没成功"}];
             return nil;
         }
         NSString *themeDir = [self findThemeDirIn:tmp];
@@ -234,27 +253,6 @@ static NSArray<NSString *> *TBRootCandidates(void) {
     return fallback;
 }
 
-+ (NSString *)importFromURL:(NSURL *)url error:(NSError **)error {
-    NSString *path = url.path;
-    if ([[path pathExtension].lowercaseString isEqualToString:@"zip"]) {
-        NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
-                         [NSString stringWithFormat:@"import-%@", [[NSUUID UUID] UUIDString]]];
-        NSError *zerr = nil;
-        if (![TBZip unzipFileAtPath:path toDirectory:tmp error:&zerr]) {
-            if (error) *error = zerr;
-            return nil;
-        }
-        NSString *themeDir = [self themeDirInside:tmp];
-        if (!themeDir) {
-            if (error) *error = [NSError errorWithDomain:@"TB" code:4
-                                                userInfo:@{NSLocalizedDescriptionKey:
-                                                               @"压缩包里没找到 IconBundles 目录"}];
-            return nil;
-        }
-        return [self importThemeDirectory:[NSURL fileURLWithPath:themeDir] error:error];
-    }
-    return [self importThemeDirectory:url error:error];
-}
 
 + (BOOL)deleteTheme:(TBTheme *)theme error:(NSError **)error {
     if (!theme.path) return NO;
