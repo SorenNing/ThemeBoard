@@ -15,6 +15,10 @@ SRCS=$(ls "$ROOT"/app/*.m)
 OBJS=""
 for f in $SRCS; do
   o="$OUT/$(basename "$f" .m).o"
+  # 增量：.o 比所有头文件和自身都新就跳过
+  if [ -f "$o" ] && [ "$o" -nt "$f" ] && [ -z "$(find "$ROOT/app" -name '*.h' -newer "$o" | head -1)" ]; then
+      OBJS="$OBJS $o"; continue
+  fi
   $CC -c -fobjc-arc -O2 -isysroot "$SDK" -target arm64-apple-ios$MIN \
       -I"$ROOT/app" -I"$SDK/System/Library/Frameworks/UIKit.framework/Headers" \
       -Wno-deprecated-declarations -o "$o" "$f"

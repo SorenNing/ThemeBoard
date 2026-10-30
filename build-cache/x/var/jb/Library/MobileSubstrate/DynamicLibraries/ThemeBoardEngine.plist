@@ -8,6 +8,11 @@
 		<array>
 			<string>SpringBoard</string>
 			<string>iconservicesagent</string>
+			<string>Preferences</string>
+		</array>
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.UIKit</string>
 		</array>
 	</dict>
 </dict>

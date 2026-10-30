@@ -41,10 +41,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     self.tableView.rowHeight = 56;
 
     self.model = @[
-        @[ @{@"t": @"引擎状态", @"act": @"engineInfo"},
-           @{@"t": @"安装 / 更新引擎", @"act": @"installEngine"},
-           @{@"t": @"重启桌面", @"act": @"respring"},
-           @{@"t": @"测试 root 助手", @"act": @"helperTest"} ],
+        @[ @{@"t": @"引擎状态", @"act": @"engineInfo"} ],
         @[ @{@"t": @"启用引擎", @"k": TBKeyEnabled, @"v": @YES, @"d": @"关闭后完全恢复系统原样"} ],
         @[ @{@"t": @"程序坞", @"k": TBKeyApplyDock, @"v": @YES},
            @{@"t": @"文件夹预览", @"k": TBKeyApplyFolder, @"v": @YES},
@@ -63,7 +60,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     // 每行配一个 SF Symbol
     NSDictionary *icons = @{
         @"引擎状态": @"waveform.path.ecg", @"安装 / 更新引擎": @"arrow.down.circle",
-        @"重启桌面": @"arrow.clockwise.circle", @"测试 root 助手": @"wrench.and.screwdriver",
+        @"重启桌面": @"arrow.clockwise.circle",
         @"启用引擎": @"power", @"程序坞": @"dock.rectangle", @"文件夹预览": @"folder",
         @"App 切换器": @"rectangle.stack", @"设置页图标": @"gearshape", @"分享面板": @"square.and.arrow.up",
         @"导入主题…": @"square.and.arrow.down", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
@@ -102,7 +99,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         NSString *st = [TBEngineInstaller runtimeState];
         if ([st isEqualToString:@"运行中"]) return @"引擎正在运行。换主题、改开关都不需要重启桌面。";
         if ([st isEqualToString:@"已安装·未运行"]) return @"引擎已安装但当前没在跑，重启一次桌面即可生效。";
-        return @"没有检测到引擎日志。请用引擎包装一次（App 在 RootHide 下无法写入注入目录）。";
+        return @"没有检测到引擎。RootHide 下 App 无法写入注入目录，请在 Sileo 安装「ThemeBoard 引擎」，装完重启一次桌面。";
     }
     if (section == 1) return @"关闭后完全恢复系统原样。";
     if (section == 2) return @"关掉某一项，那个位置就保持系统原样。";
