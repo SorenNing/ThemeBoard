@@ -38,6 +38,7 @@ static NSString *TBBundleIDFromFilename(NSString *file) {
 
 static NSInteger TBScaleRank(NSString *file) {
     if ([file hasSuffix:@"@3x.png"]) return 30;
+    if ([file hasSuffix:@"-large.png"]) return 28;
     if ([file hasSuffix:@"@2x.png"]) return 20;
     return 10;
 }

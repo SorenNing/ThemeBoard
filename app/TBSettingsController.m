@@ -14,7 +14,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
             if (folder) [types addObject:folder];
             if (zip) [types addObject:zip];
             if (types.count) {
-                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:NO];
+                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
             }
         }
         return [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
@@ -43,7 +43,8 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     self.model = @[
         @[ @{@"t": @"引擎状态", @"act": @"engineInfo"},
            @{@"t": @"安装 / 更新引擎", @"act": @"installEngine"},
-           @{@"t": @"重启桌面", @"act": @"respring"} ],
+           @{@"t": @"重启桌面", @"act": @"respring"},
+           @{@"t": @"测试 root 助手", @"act": @"helperTest"} ],
         @[ @{@"t": @"启用引擎", @"k": TBKeyEnabled, @"v": @YES, @"d": @"关闭后完全恢复系统原样"} ],
         @[ @{@"t": @"程序坞", @"k": TBKeyApplyDock, @"v": @YES},
            @{@"t": @"文件夹预览", @"k": TBKeyApplyFolder, @"v": @YES},
@@ -54,7 +55,8 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
            @{@"t": @"在文件管理器中打开主题目录", @"act": @"open"},
            @{@"t": @"重新扫描主题", @"act": @"rescan"},
            @{@"t": @"清除当前主题", @"act": @"clear"} ],
-        @[ @{@"t": @"写日志", @"k": TBKeyLogEnabled, @"v": @YES} ],
+        @[ @{@"t": @"写日志", @"k": TBKeyLogEnabled, @"v": @YES},
+           @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO} ],
     ];
 }
 
@@ -167,6 +169,9 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         [self alert:@"扫描完成" msg:[NSString stringWithFormat:@"找到 %lu 个主题", (unsigned long)themes.count]];
     } else if ([act isEqualToString:@"installEngine"]) {
         [self installEngineTapped];
+    } else if ([act isEqualToString:@"helperTest"]) {
+        NSString *r = [TBEngineInstaller runHelperTest];
+        [self alert:@"助手自检" msg:r];
     } else if ([act isEqualToString:@"respring"]) {
         [self confirmRespring];
     } else if ([act isEqualToString:@"clear"]) {
@@ -178,6 +183,23 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
 
 - (void)installEngineTapped {
     NSError *err = nil;
+    if ([TBEngineInstaller dynamicLibrariesDir] == nil) {
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"这台设备要用引擎包安装"
+            message:@"RootHide 把注入目录对 App 隐藏了，App 无法直接写入。\n在 Sileo 里装「ThemeBoard 引擎」即可，装完重启一次桌面，以后不用再管。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"复制包名" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            [UIPasteboard generalPasteboard].string = @"com.ning.themeboard.engine";
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"去 Sileo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            if (![TBEngineInstaller openSileoForEngine]) {
+                [self alert:@"打不开 Sileo" msg:@"请手动在 Sileo 搜索 ThemeBoard 引擎"];
+            }
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
+
     if ([TBEngineInstaller installEngine:&err]) {
         [self.tableView reloadData];
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"引擎已写入"

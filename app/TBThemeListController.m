@@ -14,7 +14,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
             if (folder) [types addObject:folder];
             if (zip) [types addObject:zip];
             if (types.count) {
-                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:NO];
+                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
             }
         }
         return [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]

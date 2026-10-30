@@ -1,5 +1,6 @@
 #import "TBZip.h"
 #import <zlib.h>
+#import <errno.h>
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p) {
@@ -9,10 +10,11 @@ static uint32_t rd32(const uint8_t *p) {
 @implementation TBZip
 
 + (BOOL)unzipFileAtPath:(NSString *)zipPath toDirectory:(NSString *)dstDir error:(NSError **)error {
-    NSData *data = [NSData dataWithContentsOfFile:zipPath];
+    NSData *data = [NSData dataWithContentsOfFile:zipPath options:0 error:NULL];
     if (!data.length) {
+        NSString *msg = [NSString stringWithFormat:@"读不到 zip（%@，errno=%d）", zipPath, errno];
         if (error) *error = [NSError errorWithDomain:@"TBZip" code:1
-                                            userInfo:@{NSLocalizedDescriptionKey: @"读不到 zip"}];
+                                            userInfo:@{NSLocalizedDescriptionKey: msg}];
         return NO;
     }
     const uint8_t *b = data.bytes;

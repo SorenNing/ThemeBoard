@@ -63,6 +63,11 @@ static id TBPref(NSString *key) {
     return (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key,
                                                            (__bridge CFStringRef)kDomain);
 }
+static BOOL TBSafeMode(void) {
+    id v = TBPref(@"SafeMode");
+    return v ? [v boolValue] : NO;
+}
+
 static BOOL TBEnabled(void) { id v = TBPref(kEnabled); return v ? [v boolValue] : YES; }
 static NSString *TBActiveTheme(void) {
     id v = TBPref(kActiveTheme);
@@ -112,7 +117,7 @@ static void TBLoadIndex(void) {
         if (![[f pathExtension].lowercaseString isEqualToString:@"png"]) continue;
         NSString *bid = TBStripName(f);
         if (!bid.length) continue;
-        NSInteger r = [f hasSuffix:@"@3x.png"] ? 3 : ([f hasSuffix:@"@2x.png"] ? 2 : 1);
+        NSInteger r = [f hasSuffix:@"@3x.png"] ? 3 : ([f hasSuffix:@"-large.png"] ? 3 : ([f hasSuffix:@"@2x.png"] ? 2 : 1));
         if ([rank[bid] integerValue] >= r) continue;
         map[bid] = [dir stringByAppendingPathComponent:f];
         rank[bid] = @(r);
@@ -121,6 +126,37 @@ static void TBLoadIndex(void) {
     gIndex = map;
     gIndexTheme = theme;
     if (first) TBLog(@"索引 %@ → %lu 个图标 (%@)", theme, (unsigned long)map.count, dir);
+}
+
+typedef struct { CGSize size; double scale; double ratio; } TBInfo;
+typedef TBInfo (*TBInfoFn)(id, SEL);
+
+/// 把主题图缩放成系统期望的尺寸（关键：否则会因 size 不匹配把 SpringBoard 弄崩）
+static UIImage *TBFitImage(UIImage *img, TBInfo info) {
+    if (!img) return nil;
+    CGSize pt = info.size;
+    CGFloat scale = info.scale > 0.5 ? info.scale : 3.0;
+    if (pt.width < 1 || pt.height < 1) return img;
+    if (fabs(img.size.width - pt.width) < 0.6 && fabs(img.size.height - pt.height) < 0.6) return img;
+
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = scale;
+    fmt.opaque = NO;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:pt format:fmt];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [img drawInRect:CGRectMake(0, 0, pt.width, pt.height)];
+    }];
+}
+
+static TBInfo TBInfoOfCache(id cache) {
+    TBInfo info = {{60, 60}, 3.0, 0};
+    if (!cache || ![cache respondsToSelector:NSSelectorFromString(@"iconImageInfo")]) return info;
+    @try {
+        TBInfoFn fn = (TBInfoFn)objc_msgSend;
+        info = fn(cache, NSSelectorFromString(@"iconImageInfo"));
+    } @catch (NSException *e) {}
+    if (info.size.width < 1) { info.size = CGSizeMake(60, 60); info.scale = 3.0; }
+    return info;
 }
 
 static CGFloat TBAverageLuma(UIImage *img) {
@@ -221,6 +257,7 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
 
 static UIImage *TBImageForBundle(NSString *bid) {
     if (!bid.length || !TBEnabled()) return nil;
+    if (TBSafeMode()) return nil;   // 安全模式：只记日志，绝不改图
     [gLock lock];
     TBLoadIndex();
     NSString *p = gIndex[bid];
@@ -293,7 +330,7 @@ static FnGenSize o_iconImageOfSize;
 static id tb_imageForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
+    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
     if (img) { gServe++; TBLog(@"serve imageForIcon %@", bid); return img; }
     gMiss++; TBLog(@"miss %@", bid ?: @"(无bid)");
     return o_imageForIcon ? o_imageForIcon(self, _cmd, icon) : nil;
@@ -302,7 +339,7 @@ static id tb_imageForIcon(id self, SEL _cmd, id icon) {
 static id tb_imageForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
     TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
+    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
     if (img) { gServe++; TBLog(@"serve imageForIcon:options: %@ opt=%llu", bid, opt); return img; }
     return o_imageForIconOpt ? o_imageForIconOpt(self, _cmd, icon, opt) : nil;
 }
@@ -310,7 +347,7 @@ static id tb_imageForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt)
 static id tb_cachedForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
+    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
     if (img) { gServe++; TBLog(@"serve cachedImageForIcon %@", bid); return img; }
     return o_cachedForIcon ? o_cachedForIcon(self, _cmd, icon) : nil;
 }
@@ -318,7 +355,7 @@ static id tb_cachedForIcon(id self, SEL _cmd, id icon) {
 static id tb_realForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
     TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
+    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
     if (img) { gServe++; TBLog(@"serve realImageForIcon %@", bid); return img; }
     return o_realForIconOpt ? o_realForIconOpt(self, _cmd, icon, opt) : nil;
 }
@@ -326,7 +363,7 @@ static id tb_realForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) 
 static id tb_unmaskedForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
+    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
     if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon %@", bid); return img; }
     return o_unmaskedForIcon ? o_unmaskedForIcon(self, _cmd, icon) : nil;
 }
@@ -334,7 +371,7 @@ static id tb_unmaskedForIcon(id self, SEL _cmd, id icon) {
 static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
     TBRemember(self);
     NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
+    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
     if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon:options %@", bid); return img; }
     return o_unmaskedForIconOpt ? o_unmaskedForIconOpt(self, _cmd, icon, opt) : nil;
 }
@@ -342,10 +379,7 @@ static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long o
 /// 缓存落盘的那一刻换掉图 —— 这样所有后续消费者（含变体缓存）拿到的都是主题图
 static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBImageForBundle(bid);
-    if (img) { gServe++; TBLog(@"fill cacheImage %@", bid); }
-    return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, img ?: image, icon) : nil;
+    return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, image, icon) : nil;
 }
 
 static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
@@ -379,7 +413,6 @@ static void TBInstall(void) {
         o_unmaskedForIcon     = (FnIcon)TBHook(cache, @"unmaskedImageForIcon:", (IMP)tb_unmaskedForIcon, "unmaskedImageForIcon");
         o_unmaskedForIconOpt  = (FnIconOpt)TBHook(cache, @"unmaskedImageForIcon:options:", (IMP)tb_unmaskedForIconOpt, "unmaskedImageForIcon:options");
         o_cacheImageForIcon   = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
-        o_iconImageOfSize     = (FnGenSize)TBHook(cache, @"_iconImageOfSize:scale:failGracefully:drawing:", (IMP)tb_iconImageOfSize, "iconImageOfSize");
     }
     if (icon) {
         o_generateIconImageWithInfo = (FnGen)TBHook(icon, @"generateIconImageWithInfo:", (IMP)tb_generateIconImageWithInfo, "generateIconImageWithInfo");
