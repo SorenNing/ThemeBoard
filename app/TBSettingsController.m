@@ -56,7 +56,8 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
            @{@"t": @"重新扫描主题", @"act": @"rescan"},
            @{@"t": @"清除当前主题", @"act": @"clear"} ],
         @[ @{@"t": @"写日志", @"k": TBKeyLogEnabled, @"v": @YES},
-           @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO} ],
+           @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO},
+           @{@"t": @"应用后清图标缓存", @"k": @"PurgeCache", @"v": @YES} ],
     ];
 }
 
@@ -91,6 +92,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         }
         return s;
     }
+    if (section == 4) return @"「应用后清图标缓存」关掉后，换主题要自己重启一次桌面才看得到效果，但最不容易出问题。";
     return nil;
 }
 

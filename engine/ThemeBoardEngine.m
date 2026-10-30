@@ -464,13 +464,28 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
     [gLock unlock];
     TBLog(@"设置变更：重建索引，清理 %lu 个缓存", (unsigned long)caches.count);
 
-    for (NSValue *v in caches) {
-        id cache = (__bridge id)v.pointerValue;
-        SEL sel = NSSelectorFromString(@"purgeAllCachedImages");
-        if ([cache respondsToSelector:sel]) {
-            ((void (*)(id, SEL))objc_msgSend)(cache, sel);
+    BOOL allowPurge = YES;
+    id pv = TBPref(@"PurgeCache");
+    if (pv) allowPurge = [pv boolValue];
+    if (!allowPurge) { TBLog(@"已跳过清缓存（设置里关掉了）"); return; }
+
+    // 关键：SpringBoard 的图标缓存只能在主线程动，后台线程调用会崩
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSUInteger n = 0;
+        for (NSValue *v in caches) {
+            id cache = (__bridge id)v.pointerValue;
+            @try {
+                SEL sel = NSSelectorFromString(@"purgeAllCachedImages");
+                if ([cache respondsToSelector:sel]) {
+                    ((void (*)(id, SEL))objc_msgSend)(cache, sel);
+                    n++;
+                }
+            } @catch (NSException *e) {
+                TBLog(@"清缓存异常: %@", e.reason);
+            }
         }
-    }
+        TBLog(@"主线程清缓存完成（%lu 个）", (unsigned long)n);
+    });
 
     [gImageCache removeAllObjects];
     if (TBPref(@"ForceRefresh") && [TBPref(@"ForceRefresh") boolValue]) {

@@ -1,6 +1,6 @@
 Package: com.ning.themeboard.helper
 Name: ThemeBoard root 助手
-Version: 0.7.0
+Version: 0.7.1
 Architecture: iphoneos-arm64
 Description: 以 root 身份执行少量文件操作，供 ThemeBoard 在 App 内更新引擎。仅此用途。
 Maintainer: Ning
