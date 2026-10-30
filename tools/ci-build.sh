@@ -30,13 +30,14 @@ done
 clang -target "arm64-apple-ios$VERY" -isysroot "$SDK" \
       -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
       -framework UIKit -framework Foundation -framework CoreGraphics \
-      -framework QuartzCore -framework ImageIO \
+      -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers \
       -o "$APP/ThemeBoard" "${OBJS[@]}"
 
 codesign --force --sign - --entitlements tools/entitlements.plist "$APP" 2>/dev/null || \
     codesign --force --sign - "$APP"
 cp app/Resources/Info.plist "$APP/Info.plist"
 cp app/Resources/Icon*.png "$APP/" 2>/dev/null || true
+rm -rf "$APP/DemoThemes"; cp -R demo-themes "$APP/DemoThemes" 2>/dev/null || true
 
 file "$APP/ThemeBoard"
 

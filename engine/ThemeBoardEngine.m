@@ -70,8 +70,13 @@ static NSString *TBActiveTheme(void) {
 }
 
 static NSArray<NSString *> *TBRoots(void) {
-    return @[@"/var/jb/Library/Themes", @"/var/mobile/Library/Themes",
-             @"/Library/Themes", @"/var/jb/var/mobile/Library/Themes"];
+    // App 容器路径优先（RootHide 下 App 只能写自己的容器，引擎在这里读）
+    id root = TBPref(@"ThemeRoot");
+    NSMutableArray *a = [NSMutableArray array];
+    if ([root isKindOfClass:[NSString class]] && [root length]) [a addObject:root];
+    [a addObjectsFromArray:@[@"/var/jb/Library/Themes", @"/var/mobile/Library/Themes",
+                             @"/Library/Themes", @"/var/jb/var/Library/Themes"]];
+    return a;
 }
 
 static NSString *TBThemeDir(NSString *name) {

@@ -25,12 +25,13 @@ $LD -arch arm64 -platform_version ios $MIN 16.5 -o "$APP/ThemeBoard" \
     -undefined dynamic_lookup \
     -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
     -framework UIKit -framework Foundation -framework CoreGraphics \
-    -framework QuartzCore -framework ImageIO \
+    -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers \
     $OBJS
 
 ldid -S"$ROOT/tools/entitlements.plist" "$APP/ThemeBoard"
 cp "$ROOT"/app/Resources/Info.plist "$APP/Info.plist"
 cp "$ROOT"/app/Resources/Icon*.png "$APP/" 2>/dev/null || true
+rm -rf "$APP/DemoThemes"; cp -R "$ROOT/demo-themes" "$APP/DemoThemes" 2>/dev/null || cp -R demo-themes "$APP/DemoThemes" 2>/dev/null || true
 chmod -R 755 "$APP"
 echo "== built: $APP"
 ls -la "$APP"

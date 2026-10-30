@@ -2,6 +2,25 @@
 #import "TBPrefs.h"
 #import "TBThemeScanner.h"
 #import "TBGlass.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+// 统一的文件夹选择器：iOS14+ 走 UTType，老系统回退；任何异常都不让它崩
+static UIDocumentPickerViewController *TBNewFolderPicker(void) {
+    @try {
+        if (@available(iOS 14.0, *)) {
+            UTType *folder = [UTType typeWithIdentifier:@"public.folder"];
+            if (folder) {
+                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[folder] asCopy:NO];
+            }
+        }
+        return [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
+                                                                    inMode:UIDocumentPickerModeImport];
+    } @catch (NSException *e) {
+        NSLog(@"[ThemeBoard] picker 创建失败: %@", e);
+        return nil;
+    }
+}
+
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface TBSettingsController () <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *model;
@@ -47,9 +66,14 @@
     if (section == 0) return @"引擎是注入系统进程的组件，App 只负责选择和写设置。";
     if (section == 1) return @"关掉某一项，那个位置就保持系统原样。";
     if (section == 2) {
-        NSArray *roots = [TBThemeScanner themeRoots];
-        return roots.count ? [NSString stringWithFormat:@"主题目录：\n%@", [roots componentsJoinedByString:@"\n"]]
-                           : @"没有可用的主题目录";
+        NSMutableString *s = [NSMutableString stringWithString:@"主题目录：\n"];
+        for (NSDictionary *d in [TBThemeScanner rootDiagnostics]) {
+            NSString *flag = [d[@"exists"] boolValue]
+                ? ([d[@"writable"] boolValue] ? @"✓可写" : @"✓只读")
+                : @"✗不存在";
+            [s appendFormat:@"%@ %@ (%@ 项)\n", flag, d[@"path"], d[@"count"]];
+        }
+        return s;
     }
     return nil;
 }
@@ -104,9 +128,8 @@
     if (!act) return;
 
     if ([act isEqualToString:@"import"]) {
-        UIDocumentPickerViewController *picker =
-            [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
-                                                                    inMode:UIDocumentPickerModeImport];
+        UIDocumentPickerViewController *picker = TBNewFolderPicker();
+        if (!picker) { [self alert:@"打不开" msg:@"系统没有可用的文件夹选择器"]; return; }
         picker.delegate = self;
         [self presentViewController:picker animated:YES completion:nil];
     } else if ([act isEqualToString:@"open"]) {

@@ -3,6 +3,25 @@
 #import "TBThemeScanner.h"
 #import "TBPrefs.h"
 #import "TBGlass.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+// 统一的文件夹选择器：iOS14+ 走 UTType，老系统回退；任何异常都不让它崩
+static UIDocumentPickerViewController *TBNewFolderPicker(void) {
+    @try {
+        if (@available(iOS 14.0, *)) {
+            UTType *folder = [UTType typeWithIdentifier:@"public.folder"];
+            if (folder) {
+                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[folder] asCopy:NO];
+            }
+        }
+        return [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
+                                                                    inMode:UIDocumentPickerModeImport];
+    } @catch (NSException *e) {
+        NSLog(@"[ThemeBoard] picker 创建失败: %@", e);
+        return nil;
+    }
+}
+
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface TBThemeListController () <UISearchResultsUpdating, UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<TBTheme *> *themes;
@@ -38,6 +57,9 @@
     [rc addTarget:self action:@selector(reload) forControlEvents:UIControlEventValueChanged];
     self.refreshControl = rc;
 
+    [TBThemeScanner seedDemoThemesIfNeeded];
+    [TBPrefs setString:[TBThemeScanner containerThemesDir] forKey:@"ThemeRoot"];
+    [TBPrefs synchronize];
     [self reload];
 }
 
@@ -96,9 +118,8 @@
 #pragma mark - 导入
 
 - (void)importTapped {
-    UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
-                                                                    inMode:UIDocumentPickerModeImport];
+    UIDocumentPickerViewController *picker = TBNewFolderPicker();
+    if (!picker) { [self alertTitle:@"打不开" message:@"系统没有可用的文件夹选择器"]; return; }
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     [self presentViewController:picker animated:YES completion:nil];
@@ -247,6 +268,14 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
         [self presentViewController:ac animated:YES completion:nil];
     }];
     return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
+
+
+- (void)alertTitle:(NSString *)title message:(NSString *)msg {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:msg
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 @end

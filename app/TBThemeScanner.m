@@ -1,6 +1,12 @@
 #import "TBThemeScanner.h"
 
 // 兼容 SnowBoard / Anemone 的放置位置；roothide 用 /var/jb 前缀
+// App 自己的容器目录 —— RootHide 下 /var/jb 对 App 不可见，只有这里一定可读写
+static NSString *TBContainerThemes(void) {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    return [docs stringByAppendingPathComponent:@"Themes"];
+}
+
 static NSArray<NSString *> *TBRootCandidates(void) {
     return @[
         @"/var/jb/Library/Themes",
@@ -14,6 +20,13 @@ static NSArray<NSString *> *TBRootCandidates(void) {
 
 + (NSArray<NSString *> *)themeRoots {
     NSMutableArray *out = [NSMutableArray array];
+
+    // 容器目录永远排第一，且始终创建
+    NSString *container = TBContainerThemes();
+    [[NSFileManager defaultManager] createDirectoryAtPath:container
+                              withIntermediateDirectories:YES attributes:nil error:NULL];
+    [out addObject:container];
+
     for (NSString *p in TBRootCandidates()) {
         BOOL isDir = NO;
         if ([[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir] && isDir) {
@@ -24,15 +37,47 @@ static NSArray<NSString *> *TBRootCandidates(void) {
 }
 
 + (NSString *)writableThemeRoot {
+    NSString *container = TBContainerThemes();
+    [[NSFileManager defaultManager] createDirectoryAtPath:container
+                              withIntermediateDirectories:YES attributes:nil error:NULL];
+    return container;
+}
+
++ (NSArray<NSDictionary *> *)rootDiagnostics {
+    NSMutableArray *out = [NSMutableArray array];
+    NSMutableArray *all = [NSMutableArray arrayWithObject:TBContainerThemes()];
+    [all addObjectsFromArray:TBRootCandidates()];
     NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *p in [self themeRoots]) {
-        if ([fm isWritableFileAtPath:p]) return p;
+    for (NSString *p in all) {
+        BOOL isDir = NO;
+        BOOL exists = [fm fileExistsAtPath:p isDirectory:&isDir];
+        [out addObject:@{@"path": p,
+                         @"exists": @(exists),
+                         @"writable": @(exists && [fm isWritableFileAtPath:p]),
+                         @"count": @(exists ? (NSInteger)[fm contentsOfDirectoryAtPath:p error:NULL].count : 0)}];
     }
-    // 一个都没有可写的：建 /var/jb/Library/Themes
-    NSString *p = @"/var/jb/Library/Themes";
-    [fm createDirectoryAtPath:p withIntermediateDirectories:YES attributes:nil error:NULL];
-    if ([fm isWritableFileAtPath:p]) return p;
-    return nil;
+    return out;
+}
+
++ (NSString *)containerThemesDir {
+    return TBContainerThemes();
+}
+
++ (void)seedDemoThemesIfNeeded {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = TBContainerThemes();
+    [fm createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:NULL];
+
+    NSArray *existing = [fm contentsOfDirectoryAtPath:root error:NULL];
+    if (existing.count > 0) return;
+
+    NSString *bundle = [[NSBundle mainBundle] pathForResource:@"DemoThemes" ofType:nil];
+    NSArray *items = bundle ? [fm contentsOfDirectoryAtPath:bundle error:NULL] : nil;
+    for (NSString *item in items) {
+        if (![item hasSuffix:@".theme"]) continue;
+        [fm copyItemAtPath:[bundle stringByAppendingPathComponent:item]
+                    toPath:[root stringByAppendingPathComponent:item] error:NULL];
+    }
 }
 
 + (NSArray<TBTheme *> *)scanThemes {

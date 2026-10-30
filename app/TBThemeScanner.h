@@ -18,6 +18,15 @@
 /// 导入一个主题目录（复制到第一个可写的根目录，重名自动加序号），返回新主题路径
 + (nullable NSString *)importThemeDirectory:(NSURL *)srcURL error:(NSError **)error;
 
+/// 每个候选目录的存在/可写/条目数，用于状态诊断
++ (NSArray<NSDictionary *> *)rootDiagnostics;
+
+/// App 容器内的主题目录（RootHide 下唯一可靠的位置）
++ (NSString *)containerThemesDir;
+
+/// 首次启动把包内演示主题复制进容器
++ (void)seedDemoThemesIfNeeded;
+
 /// 删除主题目录（不可恢复）
 + (BOOL)deleteTheme:(TBTheme *)theme error:(NSError **)error;
 
