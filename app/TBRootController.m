@@ -26,6 +26,18 @@
     TBStatusController *status = [[TBStatusController alloc] init];
     UINavigationController *nav3 = [[UINavigationController alloc] initWithRootViewController:status];
 
+    // 导航栏全透明，磨砂从 window 透上来
+    UINavigationBarAppearance *ap = [[UINavigationBarAppearance alloc] init];
+    [ap configureWithTransparentBackground];
+    ap.backgroundColor = [UIColor clearColor];
+    ap.shadowColor = [UIColor clearColor];
+    for (UINavigationController *nav in @[nav1, nav2, nav3]) {
+        nav.navigationBar.standardAppearance = ap;
+        nav.navigationBar.scrollEdgeAppearance = ap;
+        nav.navigationBar.compactAppearance = ap;
+        nav.navigationBar.translucent = YES;
+    }
+
     self.pages = @[nav1, nav2, nav3];
 
     for (UIViewController *vc in self.pages) {

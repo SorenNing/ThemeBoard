@@ -70,10 +70,15 @@ if [ -d demo-themes ]; then
   mkdir -p "$STAGE/var/jb/Library/Themes"
   cp -R demo-themes/*.theme "$STAGE/var/jb/Library/Themes/" 2>/dev/null || true
 fi
+# 引擎单独打包，避免装 App 时触发 SpringBoard 重载
+ESTAGE="$OUT/estage"
 if [ "$ENGINE_BUILT" = "1" ]; then
-  mkdir -p "$STAGE/var/jb/Library/MobileSubstrate/DynamicLibraries"
-  cp "$OUT/engine/ThemeBoardEngine.dylib" "$STAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/"
-  cp engine/ThemeBoardEngine.plist "$STAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/" 2>/dev/null || true
+  mkdir -p "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries" "$ESTAGE/DEBIAN"
+  cp "$OUT/engine/ThemeBoardEngine.dylib" "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/"
+  cp engine/ThemeBoardEngine.plist "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/" 2>/dev/null || true
+  cp control.engine "$ESTAGE/DEBIAN/control"
+  printf '#!/bin/sh\nexit 0\n' > "$ESTAGE/DEBIAN/postinst"
+  chmod 755 "$ESTAGE/DEBIAN/postinst"
 fi
 cp control "$STAGE/DEBIAN/control"
 cp postinst "$STAGE/DEBIAN/postinst"
@@ -88,5 +93,15 @@ rm -f "$DEB"
 echo "2.0" > "$OUT/debian-binary"
 ( cd "$OUT" && ar rc "$ROOT/$DEB" debian-binary control.tar.gz data.tar.gz )
 
+if [ "$ENGINE_BUILT" = "1" ]; then
+  EV=$(awk '/^Version:/{print $2}' control.engine)
+  EDEB="dist/com.ning.themeboard.engine_${EV}_iphoneos-arm64e.deb"
+  rm -f "$EDEB"
+  ( cd "$ESTAGE" && tar --no-mac-metadata -czf "$OUT/edata.tar.gz" ./var )
+  ( cd "$ESTAGE/DEBIAN" && tar --no-mac-metadata -czf "$OUT/econtrol.tar.gz" ./control ./postinst )
+  ( cd "$OUT" && ar rc "$ROOT/$EDEB" debian-binary econtrol.tar.gz edata.tar.gz )
+  ls -l "$EDEB"
+fi
+
 ls -l "$DEB"
-echo "== SHA256"; shasum -a 256 "$DEB"
+echo "== SHA256"; shasum -a 256 "$DEB" dist/*.deb

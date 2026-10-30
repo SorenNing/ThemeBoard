@@ -1,15 +1,5 @@
 #!/bin/sh
-set -e
 APP=/var/jb/Applications/ThemeBoard.app
 chmod -R 755 "$APP" 2>/dev/null || true
 chown -R mobile:mobile "$APP" 2>/dev/null || true
-
-DONE=0
-if [ -x /var/jb/usr/bin/uicache ]; then
-    /var/jb/usr/bin/uicache -p "$APP" >/dev/null 2>&1 && DONE=1
-fi
-if [ "$DONE" = "0" ] && [ -x /usr/bin/uicache ]; then
-    /usr/bin/uicache -p "$APP" >/dev/null 2>&1 && DONE=1
-fi
-# 找不到 uicache 也不注销：等用户自己重启桌面
 exit 0
