@@ -97,9 +97,11 @@ if [ "$ENGINE_BUILT" = "1" ]; then
   EV=$(awk '/^Version:/{print $2}' control.engine)
   EDEB="dist/com.ning.themeboard.engine_${EV}_iphoneos-arm64e.deb"
   rm -f "$EDEB"
-  ( cd "$ESTAGE" && tar --no-mac-metadata -czf "$OUT/edata.tar.gz" ./var )
-  ( cd "$ESTAGE/DEBIAN" && tar --no-mac-metadata -czf "$OUT/econtrol.tar.gz" ./control ./postinst )
-  ( cd "$OUT" && ar rc "$ROOT/$EDEB" debian-binary econtrol.tar.gz edata.tar.gz )
+  EWORK="$OUT/edeb"; rm -rf "$EWORK"; mkdir -p "$EWORK"
+  ( cd "$ESTAGE" && tar --no-mac-metadata -czf "$EWORK/data.tar.gz" ./var )
+  ( cd "$ESTAGE/DEBIAN" && tar --no-mac-metadata -czf "$EWORK/control.tar.gz" ./control ./postinst )
+  echo "2.0" > "$EWORK/debian-binary"
+  ( cd "$EWORK" && ar rc "$ROOT/$EDEB" debian-binary control.tar.gz data.tar.gz )
   ls -l "$EDEB"
 fi
 
