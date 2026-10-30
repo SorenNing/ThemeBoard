@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/build-linux.yml'
+      - 'tools/ci-linux-build.sh'
       - 'engine/**'
   workflow_dispatch:
 
@@ -18,83 +19,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl git make unzip xz-utils python3
 
-      - name: 安装 Theos（Linux 工具链）
+      - name: 构建（日志落盘 + 诊断）
         run: |
-          export THEOS=$HOME/theos
-          git clone --recursive https://github.com/theos/theos.git $THEOS
-          git clone --depth 1 https://github.com/theos/sdks.git $THEOS/sdks || true
-          if [ -x "$THEOS/bin/install-theos" ]; then yes | $THEOS/bin/install-theos || true; fi
-          if [ ! -d "$THEOS/toolchain/linux/iphone/bin" ]; then
-            echo "== 用 sbingner 的 Linux iOS 工具链 =="
-            curl -sS "https://api.github.com/repos/sbingner/llvm-project/releases" -o /tmp/rel.json || true
-            URL=$(python3 - <<'PY2'
-import json
-try:
-    d=json.load(open('/tmp/rel.json'))
-    for r in d:
-        for a in r.get('assets',[]):
-            if a['name'].endswith('.tar.lzma'):
-                print(a['browser_download_url']); raise SystemExit
-except Exception: pass
-PY2
-)
-            echo "toolchain url: $URL"
-            if [ -n "$URL" ]; then
-              curl -L -o /tmp/tc.tar.lzma "$URL"
-              mkdir -p "$THEOS/toolchain/linux"
-              tar -x --lzma -f /tmp/tc.tar.lzma -C "$THEOS/toolchain/linux"
-            fi
-          fi
-          ls "$THEOS/toolchain" 2>/dev/null || echo "toolchain 目录不存在"
-          ls "$THEOS/sdks" 2>/dev/null | head -3
+          chmod +x tools/ci-linux-build.sh
+          bash tools/ci-linux-build.sh 2>&1 | tee build-linux.log
+          echo "exit=$?" >> build-linux.log
 
-      - name: 诊断工具链
-        continue-on-error: true
-        run: |
-          export THEOS=$HOME/theos
-          echo "== PATH =="; echo $PATH
-          ls -l $THEOS/toolchain/linux/iphone/bin 2>/dev/null | head -20 || echo "无 linux 工具链目录"
-          which clang || true; clang --version || true
-          for t in $THEOS/toolchain/linux/iphone/bin/*; do echo "  $t"; done 2>/dev/null | head -20
-
-      - name: 尝试编译 arm64e 引擎
-        continue-on-error: true
-        run: |
-          set -x
-          export THEOS=$HOME/theos
-          TC=$THEOS/toolchain/linux/iphone/bin
-          SDK=$THEOS/sdks/iPhoneOS16.5.sdk
-          ls $SDK >/dev/null 2>&1 || SDK=$(ls -d $THEOS/sdks/*.sdk | head -1)
-          echo "SDK=$SDK"
-          mkdir -p out
-          for f in engine/*.m; do
-            $TC/clang -c -fobjc-arc -O2 -isysroot "$SDK" -target arm64e-apple-ios15.0 \
-              -Iengine -Wno-deprecated-declarations -o "out/$(basename "$f" .m).o" "$f" || exit 1
-          done
-          $TC/ld -dylib -arch arm64e -platform_version ios 15.0 16.5 \
-            -syslibroot "$SDK" -undefined dynamic_lookup \
-            -o out/ThemeBoardEngine.dylib out/*.o || \
-          $TC/ld64 -dylib -arch arm64e -platform_version ios 15.0 16.5 \
-            -syslibroot "$SDK" -undefined dynamic_lookup \
-            -o out/ThemeBoardEngine.dylib out/*.o || exit 1
-          file out/ThemeBoardEngine.dylib
-          python3 - <<'PY'
-          import struct
-          p='out/ThemeBoardEngine.dylib'
-          d=open(p,'rb').read()
-          cpu,sub=struct.unpack('<ii',d[4:12])
-          print("size",len(d),"cpu",hex(cpu&0xffffffff),"sub",hex(sub&0xffffffff))
-          nc=struct.unpack('<I',d[16:20])[0]; off=32; cmds=[]
-          for _ in range(nc):
-              c,sz=struct.unpack('<II',d[off:off+8]); cmds.append(c); off+=sz
-          print("chained:", 0x80000034 in cmds, "dyld_info_only:", 0x80000022 in cmds, "codesig:", 0x1d in cmds)
-          PY
-
-      - name: 上传诊断产物
+      - name: 上传日志与产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: engine-linux
+          name: linux-build
           path: |
+            build-linux.log
             out/**
           if-no-files-found: warn
