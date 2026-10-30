@@ -25,7 +25,7 @@ $LD -arch arm64 -platform_version ios $MIN 16.5 -o "$APP/ThemeBoard" \
     -undefined dynamic_lookup \
     -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
     -framework UIKit -framework Foundation -framework CoreGraphics \
-    -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers \
+    -framework QuartzCore -framework ImageIO -lz -framework UniformTypeIdentifiers \
     $OBJS
 
 ldid -S"$ROOT/tools/entitlements.plist" "$APP/ThemeBoard"

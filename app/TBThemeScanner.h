@@ -27,6 +27,12 @@
 /// 首次启动把包内演示主题复制进容器
 + (void)seedDemoThemesIfNeeded;
 
+/// 导入任意来源：文件夹直接复制，zip 先解包再找主题目录
++ (nullable NSString *)importFromAnyURL:(NSURL *)url error:(NSError **)error;
+
+/// 统一导入：文件夹或 .zip 都吃，返回落地后的主题目录
++ (nullable NSString *)importFromURL:(NSURL *)url error:(NSError **)error;
+
 /// 删除主题目录（不可恢复）
 + (BOOL)deleteTheme:(TBTheme *)theme error:(NSError **)error;
 

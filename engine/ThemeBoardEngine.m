@@ -123,6 +123,102 @@ static void TBLoadIndex(void) {
     if (first) TBLog(@"索引 %@ → %lu 个图标 (%@)", theme, (unsigned long)map.count, dir);
 }
 
+static CGFloat TBAverageLuma(UIImage *img) {
+    if (!img.CGImage) return 0.5;
+    unsigned char px[16 * 4];
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(px, 4, 4, 8, 16, cs, kCGImageAlphaPremultipliedLast);
+    if (!ctx) { CGColorSpaceRelease(cs); return 0.5; }
+    CGContextDrawImage(ctx, CGRectMake(0, 0, 4, 4), img.CGImage);
+    CGFloat sum = 0;
+    for (int i = 0; i < 16; i++)
+        sum += 0.299 * px[i*4] + 0.587 * px[i*4+1] + 0.114 * px[i*4+2];
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+    return sum / 16.0 / 255.0;
+}
+
+/// 日历 / 时钟这类动态图标：在主题底图上重绘实时内容
+static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
+    if (!base) return nil;
+    BOOL isCal = [bid isEqualToString:@"com.apple.mobilecal"];
+    BOOL isClock = [bid isEqualToString:@"com.apple.mobiletimer"];
+    if (!isCal && !isClock) return base;
+
+    CGSize size = base.size;
+    if (size.width < 8) return base;
+
+    UIColor *ink = TBAverageLuma(base) > 0.62 ? [UIColor colorWithWhite:0.12 alpha:1]
+                                              : [UIColor colorWithWhite:0.98 alpha:1];
+    NSDate *now = [NSDate date];
+
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.opaque = NO;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [base drawInRect:CGRectMake(0, 0, size.width, size.height)];
+        CGContextRef c = ctx.CGContext;
+
+        if (isCal) {
+            NSCalendar *cal = [NSCalendar currentCalendar];
+            NSInteger day = [cal component:NSCalendarUnitDay fromDate:now];
+            NSDateFormatter *df = [[NSDateFormatter alloc] init];
+            df.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+            df.dateFormat = @"EEE";
+            NSString *week = [df stringFromDate:now];
+
+            NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+            ps.alignment = NSTextAlignmentCenter;
+
+            [week drawInRect:CGRectMake(0, size.height * 0.40, size.width, size.height * 0.18)
+              withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.13 weight:UIFontWeightSemibold],
+                               NSForegroundColorAttributeName: ink,
+                               NSParagraphStyleAttributeName: ps}];
+
+            NSString *num = [NSString stringWithFormat:@"%ld", (long)day];
+            [num drawInRect:CGRectMake(0, size.height * 0.54, size.width, size.height * 0.40)
+             withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.40 weight:UIFontWeightBold],
+                              NSForegroundColorAttributeName: ink,
+                              NSParagraphStyleAttributeName: ps}];
+        } else {
+            NSCalendar *cal = [NSCalendar currentCalendar];
+            NSInteger hour = [cal component:NSCalendarUnitHour fromDate:now] % 12;
+            NSInteger minute = [cal component:NSCalendarUnitMinute fromDate:now];
+            NSInteger second = [cal component:NSCalendarUnitSecond fromDate:now];
+
+            CGPoint ctr = CGPointMake(size.width / 2, size.height / 2);
+            CGFloat R = size.width * 0.40;
+
+            CGFloat aHour = (hour + minute / 60.0) * M_PI / 6.0;
+            CGFloat aMin  = (minute + second / 60.0) * M_PI / 30.0;
+            CGFloat aSec  = second * M_PI / 30.0;
+
+            CGContextSetStrokeColorWithColor(c, ink.CGColor);
+            CGContextSetLineCap(c, kCGLineCapRound);
+
+            CGContextSetLineWidth(c, size.width * 0.055);
+            CGContextMoveToPoint(c, ctr.x, ctr.y);
+            CGContextAddLineToPoint(c, ctr.x + sin(aHour) * R * 0.55, ctr.y - cos(aHour) * R * 0.55);
+            CGContextStrokePath(c);
+
+            CGContextSetLineWidth(c, size.width * 0.038);
+            CGContextMoveToPoint(c, ctr.x, ctr.y);
+            CGContextAddLineToPoint(c, ctr.x + sin(aMin) * R * 0.82, ctr.y - cos(aMin) * R * 0.82);
+            CGContextStrokePath(c);
+
+            CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:0.95 green:0.26 blue:0.21 alpha:1].CGColor);
+            CGContextSetLineWidth(c, size.width * 0.016);
+            CGContextMoveToPoint(c, ctr.x, ctr.y);
+            CGContextAddLineToPoint(c, ctr.x + sin(aSec) * R * 0.90, ctr.y - cos(aSec) * R * 0.90);
+            CGContextStrokePath(c);
+
+            CGContextSetFillColorWithColor(c, ink.CGColor);
+            CGContextFillEllipseInRect(c, CGRectMake(ctr.x - size.width * 0.028, ctr.y - size.width * 0.028,
+                                                     size.width * 0.056, size.width * 0.056));
+        }
+    }];
+}
+
 static UIImage *TBImageForBundle(NSString *bid) {
     if (!bid.length || !TBEnabled()) return nil;
     [gLock lock];
@@ -130,6 +226,7 @@ static UIImage *TBImageForBundle(NSString *bid) {
     NSString *p = gIndex[bid];
     UIImage *img = p ? [UIImage imageWithContentsOfFile:p] : nil;
     [gLock unlock];
+    if (img) img = TBDynamicIcon(img, bid);
     return img;
 }
 

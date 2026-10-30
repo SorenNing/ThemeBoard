@@ -1,4 +1,6 @@
 #import "TBThemeScanner.h"
+#import "TBZip.h"
+#import "TBZip.h"
 
 // 兼容 SnowBoard / Anemone 的放置位置；roothide 用 /var/jb 前缀
 // App 自己的容器目录 —— RootHide 下 /var/jb 对 App 不可见，只有这里一定可读写
@@ -162,6 +164,96 @@ static NSArray<NSString *> *TBRootCandidates(void) {
         return nil;
     }
     return dst;
+}
+
+// 在解包目录里找第一个含 IconBundles / Bundles 的文件夹（广度优先，取最浅的）
++ (NSString *)findThemeDirIn:(NSString *)root {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
+    while (queue.count) {
+        NSString *dir = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        BOOL hasIB = [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"IconBundles"]];
+        BOOL hasB = [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"Bundles"]];
+        if (hasIB || hasB) return dir;
+        for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
+            if ([item hasPrefix:@"."] || [item isEqualToString:@"__MACOSX"]) continue;
+            BOOL isDir = NO;
+            NSString *sub = [dir stringByAppendingPathComponent:item];
+            if ([fm fileExistsAtPath:sub isDirectory:&isDir] && isDir) [queue addObject:sub];
+        }
+    }
+    return nil;
+}
+
++ (NSString *)importFromAnyURL:(NSURL *)url error:(NSError **)error {
+    NSString *ext = [url pathExtension].lowercaseString;
+    if ([ext isEqualToString:@"zip"]) {
+        NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"unzip-%@", [[NSUUID UUID] UUIDString]]];
+        NSError *e = nil;
+        if (![TBZip unzipFileAtPath:url.path toDirectory:tmp error:&e]) {
+            if (error) *error = e;
+            return nil;
+        }
+        NSString *themeDir = [self findThemeDirIn:tmp];
+        if (!themeDir) {
+            if (error) *error = [NSError errorWithDomain:@"TB" code:4
+                                                userInfo:@{NSLocalizedDescriptionKey:
+                                                               @"zip 里没找到 IconBundles 目录"}];
+            return nil;
+        }
+        // 解包出来的名字常常是 "xxx-master"，用 zip 文件名更直观
+        NSString *niceName = [[url lastPathComponent] stringByDeletingPathExtension];
+        NSString *root = [self writableThemeRoot];
+        NSString *dst = [self uniquePathForName:niceName inRoot:root];
+        NSError *e2 = nil;
+        if (![[NSFileManager defaultManager] moveItemAtPath:themeDir toPath:dst error:&e2]) {
+            if (error) *error = e2;
+            return nil;
+        }
+        return dst;
+    }
+    return [self importThemeDirectory:url error:error];
+}
+
++ (NSString *)themeDirInside:(NSString *)root {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:[root stringByAppendingPathComponent:@"IconBundles"]]) return root;
+
+    NSArray *items = [fm contentsOfDirectoryAtPath:root error:NULL];
+    NSString *fallback = nil;
+    for (NSString *it in items) {
+        if ([it hasPrefix:@"."] || [it isEqualToString:@"__MACOSX"]) continue;
+        NSString *p = [root stringByAppendingPathComponent:it];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:p isDirectory:&isDir] || !isDir) continue;
+        if ([fm fileExistsAtPath:[p stringByAppendingPathComponent:@"IconBundles"]]) return p;
+        if (!fallback) fallback = p;
+    }
+    return fallback;
+}
+
++ (NSString *)importFromURL:(NSURL *)url error:(NSError **)error {
+    NSString *path = url.path;
+    if ([[path pathExtension].lowercaseString isEqualToString:@"zip"]) {
+        NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                         [NSString stringWithFormat:@"import-%@", [[NSUUID UUID] UUIDString]]];
+        NSError *zerr = nil;
+        if (![TBZip unzipFileAtPath:path toDirectory:tmp error:&zerr]) {
+            if (error) *error = zerr;
+            return nil;
+        }
+        NSString *themeDir = [self themeDirInside:tmp];
+        if (!themeDir) {
+            if (error) *error = [NSError errorWithDomain:@"TB" code:4
+                                                userInfo:@{NSLocalizedDescriptionKey:
+                                                               @"压缩包里没找到 IconBundles 目录"}];
+            return nil;
+        }
+        return [self importThemeDirectory:[NSURL fileURLWithPath:themeDir] error:error];
+    }
+    return [self importThemeDirectory:url error:error];
 }
 
 + (BOOL)deleteTheme:(TBTheme *)theme error:(NSError **)error {

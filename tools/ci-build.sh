@@ -30,7 +30,7 @@ done
 clang -target "arm64-apple-ios$VERY" -isysroot "$SDK" \
       -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
       -framework UIKit -framework Foundation -framework CoreGraphics \
-      -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers \
+      -framework QuartzCore -framework ImageIO -lz -framework UniformTypeIdentifiers \
       -o "$APP/ThemeBoard" "${OBJS[@]}"
 
 codesign --force --sign - --entitlements tools/entitlements.plist "$APP" 2>/dev/null || \

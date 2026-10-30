@@ -8,8 +8,12 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     @try {
         if (@available(iOS 14.0, *)) {
             UTType *folder = [UTType typeWithIdentifier:@"public.folder"];
-            if (folder) {
-                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[folder] asCopy:NO];
+            UTType *zip = [UTType typeWithIdentifier:@"public.zip-archive"];
+            NSMutableArray *types = [NSMutableArray array];
+            if (folder) [types addObject:folder];
+            if (zip) [types addObject:zip];
+            if (types.count) {
+                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:NO];
             }
         }
         return [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
@@ -171,7 +175,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (!url) return;
     BOOL scoped = [url startAccessingSecurityScopedResource];
     NSError *err = nil;
-    NSString *dst = [TBThemeScanner importThemeDirectory:url error:&err];
+    NSString *dst = [TBThemeScanner importFromAnyURL:url error:&err];
     if (scoped) [url stopAccessingSecurityScopedResource];
     if (dst) [self alert:@"导入完成" msg:dst];
     else [self alert:@"导入失败" msg:err.localizedDescription ?: @"未知错误"];
