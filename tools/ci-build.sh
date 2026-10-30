@@ -67,6 +67,17 @@ if compgen -G "engine/*.m" > /dev/null; then
   ENGINE_BUILT=1
 fi
 
+# ---------- root 助手 ----------
+HELPER_OK=0
+if [ -f helper/themeboard_helper.c ]; then
+  mkdir -p "$OUT/helper"
+  clang -target "arm64-apple-ios$VERY" -isysroot "$SDK" -O2 \
+        -o "$OUT/helper/themeboard-helper" helper/themeboard_helper.c
+  codesign --force --sign - "$OUT/helper/themeboard-helper"
+  file "$OUT/helper/themeboard-helper"
+  HELPER_OK=1
+fi
+
 # ---------- 打包 ----------
 STAGE="$OUT/stage"
 mkdir -p "$STAGE/var/jb/Applications" "$STAGE/DEBIAN"
@@ -108,6 +119,25 @@ if [ "$ENGINE_BUILT" = "1" ]; then
   echo "2.0" > "$EWORK/debian-binary"
   ( cd "$EWORK" && ar rc "$ROOT/$EDEB" debian-binary control.tar.gz data.tar.gz )
   ls -l "$EDEB"
+fi
+
+if [ "$HELPER_OK" = "1" ]; then
+  HSTAGE="$OUT/hstage"; rm -rf "$HSTAGE"
+  mkdir -p "$HSTAGE/var/jb/usr/bin" "$HSTAGE/DEBIAN"
+  cp "$OUT/helper/themeboard-helper" "$HSTAGE/var/jb/usr/bin/"
+  chmod 4755 "$HSTAGE/var/jb/usr/bin/themeboard-helper"
+  cp control.helper "$HSTAGE/DEBIAN/control"
+  printf '#!/bin/sh\nchown root:wheel /var/jb/usr/bin/themeboard-helper\nchmod 4755 /var/jb/usr/bin/themeboard-helper\nexit 0\n' > "$HSTAGE/DEBIAN/postinst"
+  chmod 755 "$HSTAGE/DEBIAN/postinst"
+  HV=$(awk '/^Version:/{print $2}' control.helper)
+  HDEB="dist/com.ning.themeboard.helper_${HV}_iphoneos-arm64.deb"
+  rm -f "$HDEB"
+  HW="$OUT/hdeb"; rm -rf "$HW"; mkdir -p "$HW"
+  ( cd "$HSTAGE" && tar --no-mac-metadata -czf "$HW/data.tar.gz" ./var )
+  ( cd "$HSTAGE/DEBIAN" && tar --no-mac-metadata -czf "$HW/control.tar.gz" ./control ./postinst )
+  echo "2.0" > "$HW/debian-binary"
+  ( cd "$HW" && ar rc "$ROOT/$HDEB" debian-binary control.tar.gz data.tar.gz )
+  ls -l "$HDEB"
 fi
 
 ls -l "$DEB"
