@@ -27,8 +27,17 @@
 /// 首次启动把包内演示主题复制进容器
 + (void)seedDemoThemesIfNeeded;
 
+/// 真正的导入实现（不做 iCloud 协调）
++ (nullable NSString *)importLocalURL:(NSURL *)url error:(NSError **)error;
+
 /// 导入任意来源：文件夹直接复制，zip 先解包再找主题目录
 + (nullable NSString *)importFromAnyURL:(NSURL *)url error:(NSError **)error;
+
+/// 文档目录里待导入的 zip（用户通过「文件」App 拖进来的）
++ (NSArray<NSString *> *)zipsInDocuments;
+
+/// 导入文档目录里的某个 zip
++ (nullable NSString *)importZipInDocuments:(NSString *)zipName error:(NSError **)error;
 
 /// 删除主题目录（不可恢复）
 + (BOOL)deleteTheme:(TBTheme *)theme error:(NSError **)error;

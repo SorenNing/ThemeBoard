@@ -173,24 +173,64 @@ static NSArray<NSString *> *TBRootCandidates(void) {
 // 在解包目录里找第一个含 IconBundles / Bundles 的文件夹（广度优先，取最浅的）
 + (NSString *)findThemeDirIn:(NSString *)root {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSMutableArray *queue = [NSMutableArray arrayWithObject:root];
-    while (queue.count) {
-        NSString *dir = queue.firstObject;
-        [queue removeObjectAtIndex:0];
-        BOOL hasIB = [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"IconBundles"]];
-        BOOL hasB = [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"Bundles"]];
-        if (hasIB || hasB) return dir;
+    // 递归找任何名为 IconBundles 的目录（最多 5 层）
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger guard = 0;
+    while (stack.count && guard++ < 20000) {
+        NSString *dir = stack.firstObject;
+        [stack removeObjectAtIndex:0];
+
+        NSString *ib = [dir stringByAppendingPathComponent:@"IconBundles"];
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:ib isDirectory:&isDir] && isDir) return dir;
+
         for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
             if ([item hasPrefix:@"."] || [item isEqualToString:@"__MACOSX"]) continue;
-            BOOL isDir = NO;
+            BOOL d = NO;
             NSString *sub = [dir stringByAppendingPathComponent:item];
-            if ([fm fileExistsAtPath:sub isDirectory:&isDir] && isDir) [queue addObject:sub];
+            if ([fm fileExistsAtPath:sub isDirectory:&d] && d) [stack addObject:sub];
         }
     }
     return nil;
 }
 
++ (NSString *)describeTree:(NSString *)root limit:(NSInteger)limit {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableString *out = [NSMutableString string];
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger n = 0;
+    while (stack.count && n < limit) {
+        NSString *dir = stack.firstObject;
+        [stack removeObjectAtIndex:0];
+        for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
+            if ([item hasPrefix:@"."]) continue;
+            NSString *rel = [dir substringFromIndex:MIN(root.length, dir.length)];
+            [out appendFormat:@"%@/%@
+", rel, item];
+            if (++n >= limit) break;
+            BOOL d = NO;
+            NSString *sub = [dir stringByAppendingPathComponent:item];
+            if ([fm fileExistsAtPath:sub isDirectory:&d] && d) [stack addObject:sub];
+        }
+    }
+    return out;
+}
+
 + (NSString *)importFromAnyURL:(NSURL *)url error:(NSError **)error {
+    // iCloud 占位文件：先让文件协调器把它真正下载下来，再走本地流程
+    __block NSString *result = nil;
+    __block NSError *inner = nil;
+    NSError *coordErr = nil;
+    NSFileCoordinator *coord = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    [coord coordinateReadingItemAtURL:url options:0 error:&coordErr byAccessor:^(NSURL *newURL) {
+        result = [self importLocalURL:newURL error:&inner];
+    }];
+    if (result) return result;
+    if (error) *error = inner ?: coordErr;
+    return nil;
+}
+
++ (NSString *)importLocalURL:(NSURL *)url error:(NSError **)error {
     NSString *ext = [url pathExtension].lowercaseString;
     if ([ext isEqualToString:@"zip"]) {
         NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:
@@ -217,9 +257,10 @@ static NSArray<NSString *> *TBRootCandidates(void) {
         }
         NSString *themeDir = [self findThemeDirIn:tmp];
         if (!themeDir) {
+            NSString *tree = [self describeTree:tmp limit:12];
+            NSString *msg = [NSString stringWithFormat:@"zip 里没找到 IconBundles 目录。解压内容：\n%@", tree];
             if (error) *error = [NSError errorWithDomain:@"TB" code:4
-                                                userInfo:@{NSLocalizedDescriptionKey:
-                                                               @"zip 里没找到 IconBundles 目录"}];
+                                                userInfo:@{NSLocalizedDescriptionKey: msg}];
             return nil;
         }
         // 解包出来的名字常常是 "xxx-master"，用 zip 文件名更直观
@@ -253,6 +294,23 @@ static NSArray<NSString *> *TBRootCandidates(void) {
     return fallback;
 }
 
+
++ (NSArray<NSString *> *)zipsInDocuments {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSArray *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:docs error:NULL];
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *it in items) {
+        if ([[it pathExtension].lowercaseString isEqualToString:@"zip"]) [out addObject:it];
+    }
+    [out sortUsingSelector:@selector(compare:)];
+    return out;
+}
+
++ (NSString *)importZipInDocuments:(NSString *)zipName error:(NSError **)error {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSURL *url = [NSURL fileURLWithPath:[docs stringByAppendingPathComponent:zipName]];
+    return [self importFromAnyURL:url error:error];
+}
 
 + (BOOL)deleteTheme:(TBTheme *)theme error:(NSError **)error {
     if (!theme.path) return NO;

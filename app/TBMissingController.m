@@ -26,6 +26,7 @@
     self.title = @"缺少图标";
     self.tableView.rowHeight = 60;
     TBGlassTable(self.tableView);
+    TBSetPageBackground(self);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -46,6 +47,7 @@
     cell.contentView.backgroundColor = [UIColor clearColor];
     cell.backgroundView = TBGlassCellBG(12);
     cell.selectedBackgroundView = nil;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
     NSDictionary *row = _rows[indexPath.row];
     cell.textLabel.text = row[@"name"];
     cell.detailTextLabel.text = row[@"bid"];

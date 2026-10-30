@@ -3,6 +3,9 @@
 /// 动态色（浅色 / 深色各一份）
 UIColor *TBDynamicColor(UIColor *light, UIColor *dark);
 
+/// 给单个页面铺不透明背景（表格页走 backgroundView，不会随滚动跑）
+void TBSetPageBackground(UIViewController *vc);
+
 /// 容器级磨砂（放在导航控制器 view 的最底层，页面本身保持透明）
 void TBAttachFrostContainer(UIView *host);
 

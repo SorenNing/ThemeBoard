@@ -7,20 +7,14 @@
 // 统一的文件夹选择器：iOS14+ 走 UTType，老系统回退；任何异常都不让它崩
 static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     @try {
-        if (@available(iOS 14.0, *)) {
-            UTType *folder = [UTType typeWithIdentifier:@"public.folder"];
-            UTType *zip = [UTType typeWithIdentifier:@"public.zip-archive"];
-            NSMutableArray *types = [NSMutableArray array];
-            if (folder) [types addObject:folder];
-            if (zip) [types addObject:zip];
-            if (types.count) {
-                return [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
-            }
-        }
-        return [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.folder"]
+        // 用旧的 Import 模式：系统会先把文件完整下载并复制到 App 的临时目录
+        UIDocumentPickerViewController *p =
+            [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.zip-archive", @"public.folder"]
                                                                     inMode:UIDocumentPickerModeImport];
+        p.allowsMultipleSelection = NO;
+        return p;
     } @catch (NSException *e) {
-        NSLog(@"[ThemeBoard] picker 创建失败: %@", e);
+        NSLog(@"[ThemeBoard] picker 创建失败: %@", e.reason);
         return nil;
     }
 }
@@ -41,6 +35,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     self.title = @"主题";
     self.tableView.rowHeight = 76;
     TBGlassTable(self.tableView);
+    TBSetPageBackground(self);
 
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.search.searchResultsUpdater = self;
@@ -188,6 +183,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         cell.contentView.backgroundColor = [UIColor clearColor];
         cell.backgroundView = TBGlassCellBG(12);
         cell.selectedBackgroundView = nil;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.imageView.layer.cornerRadius = 11;
         cell.imageView.layer.cornerCurve = kCACornerCurveContinuous;
         cell.imageView.clipsToBounds = YES;
@@ -204,7 +200,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
                                       : @"从下方选择一个主题";
         cell.imageView.image = t ? [self thumbFor:t] : [UIImage systemImageNamed:@"circle.dashed"];
         cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.selectionStyle = t ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else {
         TBTheme *t = self.filtered[indexPath.row];
         [t loadIndex];
@@ -215,7 +211,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
         cell.imageView.image = [self thumbFor:t];
         cell.accessoryType = [[self activeThemeName] isEqualToString:t.name]
             ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     }
     return cell;
 }

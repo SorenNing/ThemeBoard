@@ -17,6 +17,7 @@
     [super viewDidLoad];
     self.title = @"状态";
     self.view.backgroundColor = [UIColor clearColor];
+    TBSetPageBackground(self);
 
     self.table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     self.table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -107,6 +108,7 @@
     cell.contentView.backgroundColor = [UIColor clearColor];
     cell.backgroundView = TBGlassCellBG(12);
     cell.selectedBackgroundView = nil;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
 
@@ -128,7 +130,7 @@
             dot.layer.cornerRadius = 5;
             cell.accessoryView = dot;
 
-            UILabel *sub = [[UILabel alloc] initWithFrame:CGRectMake(18, 46, t.bounds.size.width - 100, 18)];
+            UILabel *sub = [[UILabel alloc] initWithFrame:CGRectMake(58, 46, t.bounds.size.width - 120, 18)];
             sub.text = self.engineDetail;
             sub.font = [UIFont systemFontOfSize:13];
             sub.textColor = [UIColor secondaryLabelColor];
@@ -147,16 +149,20 @@
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.9.0", @"number"]];
+                          @[@"版本", @"0.9.1", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];
         cell.detailTextLabel.text = rows[ip.row][1];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else {
-        cell.imageView.image = [UIImage systemImageNamed:@"doc.text"];
-        cell.imageView.tintColor = [UIColor secondaryLabelColor];
-        UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(14, 10, t.bounds.size.width - 68, 280)];
+        // 日志块：图标固定在左上角，和文字对齐，不用默认 imageView（会垂直居中）
+        UIImageView *logIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.text"]];
+        logIcon.tintColor = [UIColor secondaryLabelColor];
+        logIcon.frame = CGRectMake(16, 14, 16, 16);
+        [cell.contentView addSubview:logIcon];
+
+        UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(40, 8, t.bounds.size.width - 88, 268)];
         tv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         tv.backgroundColor = [UIColor clearColor];
         tv.editable = NO;

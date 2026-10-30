@@ -26,6 +26,7 @@ static NSMutableDictionary<NSString *, NSString *> *gIndex;
 static NSString *gIndexTheme;
 static NSMutableSet<NSValue *> *gCaches;
 static NSCache *gImageCache;      // 已生成的图标缓存
+static NSMutableDictionary<NSString *, NSString *> *gBundleRes;   // 文件名 -> Bundles 里的路径
 static NSLock *gLock;
 static NSUInteger gServe, gMiss;
 
@@ -103,6 +104,57 @@ static NSString *TBStripName(NSString *file) {
     NSRange t = [s rangeOfString:@"~"];
     if (t.location != NSNotFound) s = [s substringToIndex:t.location];
     return s;
+}
+
+static void TBLoadIndex(void);          // 前置声明：TBResourceImage 会用到
+
+static void TBLoadBundleResources(NSString *themeDir) {
+    if (gBundleRes) return;
+    gBundleRes = [NSMutableDictionary dictionary];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *root = [themeDir stringByAppendingPathComponent:@"Bundles"];
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
+    NSInteger guard = 0;
+    while (stack.count && guard++ < 3000) {
+        NSString *dir = stack.firstObject;
+        [stack removeObjectAtIndex:0];
+        for (NSString *item in [fm contentsOfDirectoryAtPath:dir error:NULL]) {
+            NSString *full = [dir stringByAppendingPathComponent:item];
+            BOOL isDir = NO;
+            if (![fm fileExistsAtPath:full isDirectory:&isDir]) continue;
+            if (isDir) { [stack addObject:full]; continue; }
+            if (![[item pathExtension].lowercaseString isEqualToString:@"png"]) continue;
+            gBundleRes[item.lowercaseString] = full;
+            NSString *base = [item.stringByDeletingPathExtension lowercaseString];
+            if ([base hasSuffix:@"@2x"] || [base hasSuffix:@"@3x"])
+                base = [base substringToIndex:base.length - 3];
+            if (!gBundleRes[base]) gBundleRes[base] = full;
+        }
+    }
+    TBLog(@"Bundles 资源 %lu 个", (unsigned long)gBundleRes.count);
+}
+
+/// 主题里是否有同名资源（表盘/指针/文件夹底等）
+static UIImage *TBResourceImage(NSString *name) {
+    if (!name.length || TBSafeMode() || !TBEnabled()) return nil;
+    [gLock lock];
+    TBLoadIndex();
+    NSString *theme = TBActiveTheme();
+    NSString *dir = theme.length ? TBThemeDir(theme) : nil;
+    if (dir) TBLoadBundleResources(dir);
+    NSMutableDictionary *res = gBundleRes;
+    [gLock unlock];
+    if (!res.count) return nil;
+
+    NSString *key = name.lastPathComponent.lowercaseString;
+    NSString *path = res[key];
+    if (!path) {
+        NSString *base = [key stringByDeletingPathExtension];
+        if ([base hasSuffix:@"@2x"] || [base hasSuffix:@"@3x"])
+            base = [base substringToIndex:base.length - 3];
+        path = res[base];
+    }
+    return path ? [UIImage imageWithContentsOfFile:path] : nil;
 }
 
 static void TBLoadIndex(void) {
@@ -418,6 +470,164 @@ static id tb_iconImageOfSize(id self, SEL _cmd, CGSize size, double scale, BOOL 
     return o_iconImageOfSize ? o_iconImageOfSize(self, _cmd, size, scale, gracefully, drawing) : nil;
 }
 
+typedef UIImage *(*UIActivityIconFn)(id, SEL, NSString *);
+static UIActivityIconFn o_activityIcon;
+
+/// ShareSheet.framework/UIActivity：分享面板里每个 App 的图标
+static UIImage *tb_activityImageForBID(id self, SEL _cmd, NSString *bid) {
+    UIImage *img = TBImageForBundle(bid);
+    if (img) { gServe++; TBLog(@"serve UIActivity %@", bid); return img; }
+    return o_activityIcon ? o_activityIcon(self, _cmd, bid) : nil;
+}
+
+
+#pragma mark - IconServices（设置页 / 资源库 / 通知中心那条链）
+
+typedef CGImageRef (*ISIconCGFn)(id, SEL, id);
+static ISIconCGFn o_isiconCG, o_isiconCG2;
+
+static NSString *TBBIDFromISIcon(id icon) {
+    if (!icon) return nil;
+    for (NSString *k in @[@"bundleIdentifier", @"applicationBundleIdentifier"]) {
+        @try {
+            id v = [icon valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && [v length]) return v;
+        } @catch (NSException *e) {}
+    }
+    @try {
+        id ident = [icon valueForKey:@"_identity"];
+        for (NSString *k in @[@"bundleIdentifier", @"applicationBundleIdentifier", @"resourceIdentifier"]) {
+            id v = [ident valueForKey:k];
+            if ([v isKindOfClass:[NSString class]] && [v length]) return v;
+        }
+        id res = [ident valueForKey:@"resource"];
+        id v2 = [res valueForKey:@"bundleIdentifier"];
+        if ([v2 isKindOfClass:[NSString class]] && [v2 length]) return v2;
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+static UIImage *TBImageFromISIcon(id icon, id descriptor) {
+    NSString *bid = TBBIDFromISIcon(icon);
+    if (!bid.length) return nil;
+    UIImage *img = TBImageForBundle(bid);
+    if (!img) return nil;
+
+    CGSize pt = CGSizeMake(60, 60);
+    CGFloat scale = 3.0;
+    @try {
+        NSValue *sv = [descriptor valueForKey:@"sanitizedSize"];
+        if ([sv isKindOfClass:[NSValue class]]) pt = sv.CGSizeValue;
+        NSNumber *sc = [descriptor valueForKey:@"sanitizedScale"];
+        if ([sc isKindOfClass:[NSNumber class]]) scale = sc.doubleValue;
+    } @catch (NSException *e) {}
+    if (pt.width < 1) pt = CGSizeMake(60, 60);
+    if (scale < 0.5) scale = 3.0;
+
+    TBInfo info = { pt, (double)scale, 0 };
+    return TBFitImage(img, info);
+}
+
+static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
+    @try {
+        UIImage *img = TBImageFromISIcon(self, descriptor);
+        if (img && img.CGImage) {
+            gServe++;
+            TBLog(@"serve ISIcon %@", TBBIDFromISIcon(self));
+            return img.CGImage;
+        }
+    } @catch (NSException *e) {
+        TBLog(@"ISIcon 异常: %@", e.reason);
+    }
+    return o_isiconCG ? o_isiconCG(self, _cmd, descriptor) : NULL;
+}
+
+static CGImageRef tb_isicon_cg2(id self, SEL _cmd, id descriptor) {
+    @try {
+        UIImage *img = TBImageFromISIcon(self, descriptor);
+        if (img && img.CGImage) {
+            gServe++;
+            TBLog(@"serve ISIcon(1) %@", TBBIDFromISIcon(self));
+            return img.CGImage;
+        }
+    } @catch (NSException *e) {}
+    return o_isiconCG2 ? o_isiconCG2(self, _cmd, descriptor) : NULL;
+}
+
+
+// 返回类型不确定（UIImage 或 CGImageRef），运行时按真实类型替换；只对日历/时钟生效
+typedef id (*ISIconImgFn)(id, SEL, id);
+static ISIconImgFn o_isiconImg, o_isiconImg2;
+
+static BOOL TBIsDynamicBID(NSString *bid) {
+    return [bid isEqualToString:@"com.apple.mobilecal"] || [bid isEqualToString:@"com.apple.mobiletimer"];
+}
+
+static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
+    id ret = o_isiconImg ? o_isiconImg(self, _cmd, descriptor) : nil;
+
+    NSString *bid = TBBIDFromISIcon(self);
+    if (!TBIsDynamicBID(bid)) return ret;
+
+    @try {
+        UIImage *ours = TBImageFromISIcon(self, descriptor);
+        if (!ours) return ret;
+        if ([ret isKindOfClass:[UIImage class]]) {
+            gServe++;
+            TBLog(@"serve ISIcon.img %@", bid);
+            return ours;
+        }
+        if (ret && CFGetTypeID((__bridge CFTypeRef)ret) == CGImageGetTypeID()) {
+            gServe++;
+            TBLog(@"serve ISIcon.cg %@", bid);
+            return (__bridge id)ours.CGImage;
+        }
+    } @catch (NSException *e) {
+        TBLog(@"ISIcon.image 异常: %@", e.reason);
+    }
+    return ret;
+}
+
+static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
+    id ret = o_isiconImg2 ? o_isiconImg2(self, _cmd, descriptor) : nil;
+
+    NSString *bid = TBBIDFromISIcon(self);
+    if (!TBIsDynamicBID(bid)) return ret;
+
+    @try {
+        UIImage *ours = TBImageFromISIcon(self, descriptor);
+        if (!ours) return ret;
+        if ([ret isKindOfClass:[UIImage class]]) {
+            gServe++;
+            TBLog(@"serve ISIcon.img2 %@", bid);
+            return ours;
+        }
+        if (ret && CFGetTypeID((__bridge CFTypeRef)ret) == CGImageGetTypeID()) {
+            gServe++;
+            TBLog(@"serve ISIcon.cg2 %@", bid);
+            return (__bridge id)ours.CGImage;
+        }
+    } @catch (NSException *e) {}
+    return ret;
+}
+
+#pragma mark - SpringBoard 资源替换（时钟表盘/指针、文件夹底图）
+
+typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
+static ImgNameFn o_imageNamed, o_imageWithFile;
+
+static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
+    UIImage *img = TBResourceImage(name);
+    if (img) { gServe++; TBLog(@"serve 资源 %@", name); return img; }
+    return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
+}
+
+static UIImage *tb_imageWithFile(id self, SEL _cmd, NSString *path) {
+    UIImage *img = TBResourceImage(path);
+    if (img) { gServe++; TBLog(@"serve 资源文件 %@", path.lastPathComponent); return img; }
+    return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
+}
+
 #pragma mark - 安装
 
 static void TBInstall(void) {
@@ -425,6 +635,26 @@ static void TBInstall(void) {
     Class icon  = NSClassFromString(@"SBIcon");
     Class leaf  = NSClassFromString(@"SBLeafIcon");
     TBLog(@"类: cache=%@ icon=%@ leaf=%@", cache ? @"有" : @"无", icon ? @"有" : @"无", leaf ? @"有" : @"无");
+
+    // 只替换主题里确实存在的同名资源，其它一概放行
+    o_imageNamed = (ImgNameFn)TBHookClass([UIImage class], @"imageNamed:",
+                                          (IMP)tb_imageNamed, "UIImage.imageNamed");
+    o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
+                                             (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
+
+    Class isicon = NSClassFromString(@"ISIcon");
+    if (isicon) {
+        o_isiconCG  = (ISIconCGFn)TBHook(isicon, @"CGImageForImageDescriptor:", (IMP)tb_isicon_cg, "ISIcon取图");
+        o_isiconCG2 = (ISIconCGFn)TBHook(isicon, @"CGImageForDescriptor:", (IMP)tb_isicon_cg2, "ISIcon取图2");
+        o_isiconImg  = (ISIconImgFn)TBHook(isicon, @"imageForImageDescriptor:", (IMP)tb_isicon_image, "ISIcon图像");
+        o_isiconImg2 = (ISIconImgFn)TBHook(isicon, @"imageForDescriptor:", (IMP)tb_isicon_image2, "ISIcon图像2");
+    }
+
+    Class activity = NSClassFromString(@"UIActivity");
+    if (activity) {
+        o_activityIcon = (UIActivityIconFn)TBHookClass(activity,
+            @"_activityImageForApplicationBundleIdentifier:", (IMP)tb_activityImageForBID, "UIActivity图标");
+    }
 
     if (cache) {
         o_imageForIcon        = (FnIcon)TBHook(cache, @"imageForIcon:", (IMP)tb_imageForIcon, "imageForIcon");
@@ -465,6 +695,46 @@ static void TBRefreshSpringBoard(void) {
     TBLog(@"· 没有找到 iconManager，图标要等下次重绘");
 }
 
+/// 取桌面上所有图标（用于按需清理缓存）
+static NSArray *TBAllIcons(void) {
+    @try {
+        Class sc = NSClassFromString(@"SBIconController");
+        if (sc) {
+            id ctrl = ((id (*)(id, SEL))objc_msgSend)(sc, NSSelectorFromString(@"sharedInstance"));
+            id mgr = [ctrl valueForKey:@"iconManager"];
+            id model = [mgr valueForKey:@"iconModel"];
+            id leaf = [model valueForKey:@"leafIcons"];
+            if ([leaf isKindOfClass:[NSArray class]] && [leaf count]) return leaf;
+            id all = [model valueForKey:@"icons"];
+            if ([all isKindOfClass:[NSArray class]] && [all count]) return all;
+        }
+    } @catch (NSException *e) {
+        TBLog(@"取图标列表失败: %@", e.reason);
+    }
+    return @[];
+}
+
+/// 只清这些图标的缓存；icons 为空则退化为全清
+static void TBPurgeIcons(NSValue *cacheValue, NSArray *icons) {
+    id cache = (__bridge id)cacheValue.pointerValue;
+    if (!cache) return;
+    @try {
+        if (icons.count) {
+            SEL sel = NSSelectorFromString(@"purgeCachedImagesForIcons:");
+            if ([cache respondsToSelector:sel]) {
+                ((void (*)(id, SEL, id))objc_msgSend)(cache, sel, icons);
+            }
+        } else {
+            SEL all = NSSelectorFromString(@"purgeAllCachedImages");
+            if ([cache respondsToSelector:all]) {
+                ((void (*)(id, SEL))objc_msgSend)(cache, all);
+            }
+        }
+    } @catch (NSException *e) {
+        TBLog(@"清理异常: %@", e.reason);
+    }
+}
+
 static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
     [gLock lock];
     gIndex = nil;
@@ -477,22 +747,29 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
     if (pv) allowPurge = [pv boolValue];
     if (!allowPurge) { TBLog(@"已跳过清缓存（设置里关掉了）"); return; }
 
-    // 关键：SpringBoard 的图标缓存只能在主线程动，后台线程调用会崩
+    // 主线程、按图标、分批清理：一次清光会把 SpringBoard 拖死
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSUInteger n = 0;
-        for (NSValue *v in caches) {
-            id cache = (__bridge id)v.pointerValue;
-            @try {
-                SEL sel = NSSelectorFromString(@"purgeAllCachedImages");
-                if ([cache respondsToSelector:sel]) {
-                    ((void (*)(id, SEL))objc_msgSend)(cache, sel);
-                    n++;
-                }
-            } @catch (NSException *e) {
-                TBLog(@"清缓存异常: %@", e.reason);
-            }
+        NSArray *icons = TBAllIcons();
+        NSArray *cacheList = caches;
+        if (icons.count == 0) {
+            // 拿不到图标列表时退化为旧方式，但只清一次且容错
+            for (NSValue *v in cacheList) { TBPurgeIcons(v, nil); }
+            TBLog(@"清缓存（无图标列表）");
+            return;
         }
-        TBLog(@"主线程清缓存完成（%lu 个）", (unsigned long)n);
+
+        const NSUInteger chunk = 30;
+        NSUInteger i = 0;
+        NSInteger round = 0;
+        while (i < icons.count) {
+            NSUInteger n = MIN(chunk, icons.count - i);
+            NSArray *part = [icons subarrayWithRange:NSMakeRange(i, n)];
+            for (NSValue *v in cacheList) { TBPurgeIcons(v, part); }
+            i += n;
+            round++;
+            usleep(20000);   // 每批之间让出 20ms，避免主线程长时间被占用
+        }
+        TBLog(@"已分批清理 %lu 个图标的缓存（%ld 批）", (unsigned long)icons.count, (long)round);
     });
 
     [gImageCache removeAllObjects];
@@ -506,16 +783,26 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
 
 __attribute__((constructor))
 static void TBMain(void) {
+    BOOL hasCache = NSClassFromString(@"SBHIconImageCache") != nil;
+    BOOL hasActivity = NSClassFromString(@"UIActivity") != nil;
+    BOOL hasISIcon = NSClassFromString(@"ISIcon") != nil;
+    // 与图标无关的进程：静默退出，避免刷日志
+    if (!hasCache && !hasActivity && !hasISIcon) return;
+
     gLock = [[NSLock alloc] init];
     gImageCache = [[NSCache alloc] init];
     gImageCache.countLimit = 600;
-    TBLog(@"=== ThemeBoardEngine 0.2 加载 pid=%d ===", getpid());
-    TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
+    if (hasCache) {
+        TBLog(@"=== ThemeBoardEngine 加载 pid=%d ===", getpid());
+        TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
+    }
     TBInstall();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBReload,
                                     (__bridge CFStringRef)kNotify, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 
+    // 心跳只在负责图标缓存的进程（SpringBoard）里跑，避免多进程反复改日志时间戳
+    if (!hasCache) return;
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         while (1) {
             sleep(60);
