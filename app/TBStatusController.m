@@ -142,7 +142,7 @@
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion]],
                           @[@"机型", [[UIDevice currentDevice] model]],
-                          @[@"版本", @"0.5.1"]];
+                          @[@"版本", @"0.6.0"]];
         cell.textLabel.text = rows[ip.row][0];
         cell.detailTextLabel.text = rows[ip.row][1];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;

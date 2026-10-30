@@ -59,6 +59,11 @@ if compgen -G "engine/*.m" > /dev/null; then
         -o "$OUT/engine/ThemeBoardEngine.dylib" "${EOBJS[@]}"
   codesign --force --sign - "$OUT/engine/ThemeBoardEngine.dylib"
   file "$OUT/engine/ThemeBoardEngine.dylib"
+  # 同时放进 App 包，供 App 内「自装引擎」使用
+  mkdir -p "$APP/Engine"
+  cp "$OUT/engine/ThemeBoardEngine.dylib" "$APP/Engine/"
+  cp engine/ThemeBoardEngine.plist "$APP/Engine/"
+  awk '/^Version:/{print $2}' control.engine > "$APP/Engine/version.txt"
   ENGINE_BUILT=1
 fi
 

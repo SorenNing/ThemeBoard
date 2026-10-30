@@ -2,6 +2,7 @@
 #import "TBPrefs.h"
 #import "TBThemeScanner.h"
 #import "TBGlass.h"
+#import "TBEngineInstaller.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 // 统一的文件夹选择器：iOS14+ 走 UTType，老系统回退；任何异常都不让它崩
 static UIDocumentPickerViewController *TBNewFolderPicker(void) {
@@ -40,6 +41,9 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     self.tableView.rowHeight = 56;
 
     self.model = @[
+        @[ @{@"t": @"引擎状态", @"act": @"engineInfo"},
+           @{@"t": @"安装 / 更新引擎", @"act": @"installEngine"},
+           @{@"t": @"重启桌面", @"act": @"respring"} ],
         @[ @{@"t": @"启用引擎", @"k": TBKeyEnabled, @"v": @YES, @"d": @"关闭后完全恢复系统原样"} ],
         @[ @{@"t": @"程序坞", @"k": TBKeyApplyDock, @"v": @YES},
            @{@"t": @"文件夹预览", @"k": TBKeyApplyFolder, @"v": @YES},
@@ -58,17 +62,24 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch (section) {
-        case 0: return @"引擎";
-        case 1: return @"生效范围";
-        case 2: return @"主题";
+        case 0: return @"引擎组件";
+        case 1: return @"开关";
+        case 2: return @"生效范围";
+        case 3: return @"主题";
         default: return @"诊断";
     }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"引擎是注入系统进程的组件，App 只负责选择和写设置。";
-    if (section == 1) return @"关掉某一项，那个位置就保持系统原样。";
-    if (section == 2) {
+    if (section == 0) {
+        if ([TBEngineInstaller isInstalled]) {
+            return @"引擎已安装。换主题、改开关都不需要重启桌面。";
+        }
+        return @"引擎还没装。点「安装 / 更新引擎」写入注入目录，然后重启一次桌面即可，以后不用再重启。";
+    }
+    if (section == 1) return @"关闭后完全恢复系统原样。";
+    if (section == 2) return @"关掉某一项，那个位置就保持系统原样。";
+    if (section == 3) {
         NSMutableString *s = [NSMutableString stringWithString:@"主题目录：\n"];
         for (NSDictionary *d in [TBThemeScanner rootDiagnostics]) {
             NSString *flag = [d[@"exists"] boolValue]
@@ -106,6 +117,20 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     } else {
         cell.textLabel.textColor = [UIColor labelColor];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        if ([row[@"act"] isEqualToString:@"engineInfo"]) {
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            BOOL ok = [TBEngineInstaller isInstalled];
+            cell.detailTextLabel.text = ok ? @"已安装" : @"未安装";
+            cell.detailTextLabel.textColor = ok ? [UIColor systemGreenColor] : [UIColor systemOrangeColor];
+            if ([TBEngineInstaller dynamicLibrariesDir] == nil) {
+                cell.detailTextLabel.text = @"未安装（目录不可见）";
+                cell.detailTextLabel.textColor = [UIColor systemRedColor];
+            }
+        }
+        if ([row[@"act"] isEqualToString:@"respring"]) {
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            cell.detailTextLabel.text = @"只在装完引擎后用一次";
+        }
         if ([row[@"act"] isEqualToString:@"clear"]) {
             cell.textLabel.textColor = [UIColor systemRedColor];
         }
@@ -140,10 +165,48 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     } else if ([act isEqualToString:@"rescan"]) {
         NSArray *themes = [TBThemeScanner scanThemes];
         [self alert:@"扫描完成" msg:[NSString stringWithFormat:@"找到 %lu 个主题", (unsigned long)themes.count]];
+    } else if ([act isEqualToString:@"installEngine"]) {
+        [self installEngineTapped];
+    } else if ([act isEqualToString:@"respring"]) {
+        [self confirmRespring];
     } else if ([act isEqualToString:@"clear"]) {
         [TBPrefs setString:nil forKey:TBKeyActiveTheme];
         [TBPrefs notifyChanged];
         [self alert:@"已清除" msg:@"当前不再使用任何主题"];
+    }
+}
+
+- (void)installEngineTapped {
+    NSError *err = nil;
+    if ([TBEngineInstaller installEngine:&err]) {
+        [self.tableView reloadData];
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"引擎已写入"
+            message:@"需要重启一次桌面才会加载。现在就重启吗？\n（只会重启 SpringBoard，不影响其他东西）"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"稍后" style:UIAlertActionStyleCancel handler:nil]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"立即重启" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+            [self doRespring];
+        }]];
+        [self presentViewController:ac animated:YES completion:nil];
+    } else {
+        [self alert:@"安装失败" msg:err.localizedDescription ?: @"未知错误"];
+    }
+}
+
+- (void)confirmRespring {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"重启桌面？"
+        message:@"屏幕会黑一下，随后回到桌面，正在运行的 App 会被关闭"
+        preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"重启" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+        [self doRespring];
+    }]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)doRespring {
+    if (![TBEngineInstaller respring]) {
+        [self alert:@"重启失败" msg:@"找不到 sbreload / killall，请手动重启桌面"];
     }
 }
 
