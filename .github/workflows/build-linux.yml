@@ -17,20 +17,19 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git make unzip xz-utils python3
+          sudo apt-get install -y curl git make unzip xz-utils python3 dpkg-dev
 
-      - name: 构建（日志落盘 + 诊断）
+      - name: 构建引擎
         run: |
           chmod +x tools/ci-linux-build.sh
           bash tools/ci-linux-build.sh 2>&1 | tee build-linux.log
-          echo "exit=$?" >> build-linux.log
 
-      - name: 上传日志与产物
+      - name: 上传产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: linux-build
+          name: engine-linux
           path: |
             build-linux.log
-            out/**
+            dist/*.deb
           if-no-files-found: warn
