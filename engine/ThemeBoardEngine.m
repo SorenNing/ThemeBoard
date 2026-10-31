@@ -62,6 +62,21 @@ static const char *TBLogFilePath(void) {
     return NULL;
 }
 
+/// 探针日志单独一个文件，避免被 serve 日志冲掉
+static void TBProbe(NSString *fmt, ...) {
+    if (!gIsPrimary) return;
+    va_list ap; va_start(ap, fmt);
+    NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    const char *p = "/var/mobile/Library/ThemeBoard/probe.log";
+    FILE *f = fopen(p, "a");
+    if (!f) return;
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"HH:mm:ss";
+    fprintf(f, "%s %s\n", [[df stringFromDate:[NSDate date]] UTF8String], [body UTF8String]);
+    fclose(f);
+}
+
 static void TBLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
@@ -298,11 +313,22 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
         if (isCal) {
             NSCalendar *cal = [NSCalendar currentCalendar];
             NSInteger day = [cal component:NSCalendarUnitDay fromDate:now];
+            NSDateFormatter *df = [[NSDateFormatter alloc] init];
+            df.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+            df.dateFormat = @"EEE";
+            NSString *week = [df stringFromDate:now];
+
             NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
             ps.alignment = NSTextAlignmentCenter;
+
+            [week drawInRect:CGRectMake(0, size.height * 0.14, size.width, size.height * 0.20)
+              withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.15 weight:UIFontWeightSemibold],
+                               NSForegroundColorAttributeName: ink,
+                               NSParagraphStyleAttributeName: ps}];
+
             NSString *num = [NSString stringWithFormat:@"%ld", (long)day];
-            [num drawInRect:CGRectMake(0, size.height * 0.52, size.width, size.height * 0.40)
-             withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.42 weight:UIFontWeightBold],
+            [num drawInRect:CGRectMake(0, size.height * 0.44, size.width, size.height * 0.44)
+             withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.44 weight:UIFontWeightBold],
                               NSForegroundColorAttributeName: ink,
                               NSParagraphStyleAttributeName: ps}];
         } else {
@@ -509,7 +535,7 @@ static UIActivityIconFn o_activityIcon;
 
 /// ShareSheet.framework/UIActivity：分享面板里每个 App 的图标
 static UIImage *tb_activityImageForBID(id self, SEL _cmd, NSString *bid) {
-    if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe UIActivity %@", bid); }
+    if (gProbeCount < 200) { gProbeCount++; TBProbe(@"UIActivity %@", bid); }
     UIImage *img = TBImageForBundle(bid);
     if (img) { gServe++; TBLog(@"serve UIActivity %@", bid); return img; }
     return o_activityIcon ? o_activityIcon(self, _cmd, bid) : nil;
@@ -565,7 +591,7 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
     @try {
-        if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe ISIcon %@", TBBIDFromISIcon(self)); }
+        if (gProbeCount < 200) { gProbeCount++; TBProbe(@"ISIcon %@", TBBIDFromISIcon(self)); }
         UIImage *img = TBImageFromISIcon(self, descriptor);
         if (img && img.CGImage) {
             gServe++;
@@ -653,6 +679,9 @@ typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
 static ImgNameFn o_imageNamed, o_imageWithFile;
 
 static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
+    if (gProbeCount < 200 && [name rangeOfString:@"Icon"].location != NSNotFound) {
+        gProbeCount++; TBProbe(@"imageNamed %@", name);
+    }
     UIImage *img = TBResourceImage(name);
     if (img) { gServe++; TBLog(@"serve 资源 %@", name); return img; }
     return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
@@ -700,6 +729,25 @@ static NSString *tb_pathForResDir(id self, SEL _cmd, NSString *name, NSString *e
     return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
 }
 
+typedef UIImage *(*ImgNamedBundleFn)(id, SEL, NSString *, NSBundle *, UITraitCollection *);
+typedef NSURL *(*BundleURLResFn)(id, SEL, NSString *, NSString *, NSString *);
+static ImgNamedBundleFn o_imageNamedBundle;
+static BundleURLResFn o_urlForRes;
+
+static UIImage *tb_imageNamedBundle(id self, SEL _cmd, NSString *name, NSBundle *bundle, UITraitCollection *tc) {
+    if (gProbeCount < 200 && name.length) { gProbeCount++; TBProbe(@"imageNamed:inBundle: %@", name); }
+    UIImage *img = TBResourceImage(name);
+    if (img) { TBLog(@"serve 资源(bundle) %@", name); return img; }
+    return o_imageNamedBundle ? o_imageNamedBundle(self, _cmd, name, bundle, tc) : nil;
+}
+
+static NSURL *tb_urlForRes(id self, SEL _cmd, NSString *name, NSString *ext, NSString *subdir) {
+    if (gProbeCount < 200 && name.length) { gProbeCount++; TBProbe(@"URLForResource %@.%@", name, ext); }
+    NSString *p = TBResourcePathNamed(name, ext);
+    if (p) { TBLog(@"serve 资源URL %@.%@", name, ext); return [NSURL fileURLWithPath:p]; }
+    return o_urlForRes ? o_urlForRes(self, _cmd, name, ext, subdir) : nil;
+}
+
 #pragma mark - 安装
 
 static void TBInstall(void) {
@@ -724,6 +772,10 @@ static void TBInstall(void) {
                                              (IMP)tb_pathForRes, "NSBundle.pathForResource");
     o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
                                                    (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
+    o_urlForRes = (BundleURLResFn)TBHookClass([NSBundle class], @"URLForResource:withExtension:subdirectory:",
+                                              (IMP)tb_urlForRes, "NSBundle.URLForResource");
+    o_imageNamedBundle = (ImgNamedBundleFn)TBHookClass([UIImage class], @"imageNamed:inBundle:compatibleWithTraitCollection:",
+                                                       (IMP)tb_imageNamedBundle, "UIImage.imageNamedInBundle");
 
     Class isicon = NSClassFromString(@"ISIcon");
     if (isicon) {

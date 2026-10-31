@@ -141,10 +141,13 @@ static NSString *TBReadLogLossy(NSString *path) {
     return [TBPrefs stringForKey:TBKeyActiveTheme] ?: @"未选择";
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return 4; }
 
 - (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s {
-    return s == 0 ? nil : (s == 1 ? @"环境" : @"引擎日志");
+    if (s == 0) return nil;
+    if (s == 1) return @"环境";
+    if (s == 2) return @"引擎日志";
+    return @"探针日志（设置页/分享面板/通知中心走哪些接口）";
 }
 
 - (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
@@ -152,6 +155,7 @@ static NSString *TBReadLogLossy(NSString *path) {
 }
 
 - (CGFloat)tableView:(UITableView *)t heightForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 3) return 240;
     if (ip.section == 2) return 300;
     if (ip.section == 0 && ip.row == 0) return 78;
     return 52;
@@ -204,11 +208,28 @@ static NSString *TBReadLogLossy(NSString *path) {
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.12.3", @"number"]];
+                          @[@"版本", @"0.12.5", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];
         cell.detailTextLabel.text = rows[ip.row][1];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else if (ip.section == 3) {
+        UITextView *pv = [[UITextView alloc] initWithFrame:CGRectMake(14, 8, t.bounds.size.width - 42, 224)];
+        pv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        pv.backgroundColor = [UIColor clearColor];
+        pv.editable = NO;
+        pv.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+        pv.textColor = [UIColor secondaryLabelColor];
+        NSString *pl = TBReadLogLossy(@"/var/mobile/Library/ThemeBoard/probe.log");
+        if (pl.length) {
+            NSArray *ls = [pl componentsSeparatedByString:@"\n"];
+            NSUInteger keep = ls.count > 30 ? ls.count - 30 : 0;
+            pv.text = [[ls subarrayWithRange:NSMakeRange(keep, ls.count - keep)] componentsJoinedByString:@"\n"];
+        } else {
+            pv.text = @"（没有探针记录）";
+        }
+        [cell.contentView addSubview:pv];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else {
         // 日志块：图标固定在左上角，和文字对齐，不用默认 imageView（会垂直居中）
