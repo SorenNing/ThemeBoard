@@ -781,12 +781,31 @@ static NSString *tb_pathForResDir(id self, SEL _cmd, NSString *name, NSString *e
     return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
 }
 
+#pragma mark - 桌面时钟（SBHClockApplicationIconImageView 自己合成表盘+指针，绕过图片缓存）
+
+typedef struct { double w, h, scale, ratio; } TBClockInfo;      // SBIconImageInfo 的等价布局
+typedef id (*ClockIconImageFn)(id, SEL, TBClockInfo, BOOL);
+static ClockIconImageFn o_clockIconImage;
+
+static id tb_clockIconImage(id self, SEL _cmd, TBClockInfo info, BOOL mask) {
+    if (TBEnabled() && !TBSafeMode()) {
+        UIImage *img = TBImageForBundle(@"com.apple.mobiletimer");
+        if (img) {
+            TBLog(@"serve 时钟图标（桌面合成）");
+            TBInfo fi; fi.size = CGSizeMake(info.w, info.h); fi.scale = info.scale; fi.ratio = 0;
+            return TBFitImage(img, fi);
+        }
+    }
+    return o_clockIconImage ? o_clockIconImage(self, _cmd, info, mask) : nil;
+}
+
 #pragma mark - 安装
 
 static BOOL gDoneImageHooks = NO;      // UIImage / NSBundle 那组
 static BOOL gDoneISIcon = NO;
 static BOOL gDoneActivity = NO;
 static BOOL gDoneCache = NO;
+static BOOL gDoneClock = NO;
 
 static void TBInstall(void) {
     Class cache = NSClassFromString(@"SBHIconImageCache");
@@ -819,6 +838,13 @@ static void TBInstall(void) {
         o_isiconImg  = (ISIconImgFn)TBHook(isicon, @"imageForImageDescriptor:", (IMP)tb_isicon_image, "ISIcon图像");
         o_isiconImg2 = (ISIconImgFn)TBHook(isicon, @"imageForDescriptor:", (IMP)tb_isicon_image2, "ISIcon图像2");
         gDoneISIcon = YES;
+    }
+
+    Class clockView = NSClassFromString(@"SBHClockApplicationIconImageView");
+    if (clockView && !gDoneClock) {
+        gDoneClock = YES;
+        o_clockIconImage = (ClockIconImageFn)TBHookClass(clockView, @"iconImageWithImageInfo:includingMask:",
+                                                         (IMP)tb_clockIconImage, "桌面时钟图标");
     }
 
     Class activity = NSClassFromString(@"UIActivity");
