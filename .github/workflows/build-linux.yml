@@ -10,14 +10,14 @@ on:
 
 jobs:
   engine:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl git make unzip xz-utils python3 dpkg-dev
+          sudo apt-get install -y curl git make unzip xz-utils python3 dpkg-dev libtinfo5 || true
 
       - name: 构建引擎
         run: |

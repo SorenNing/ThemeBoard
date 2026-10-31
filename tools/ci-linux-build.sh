@@ -60,6 +60,19 @@ if ! command -v ldid >/dev/null 2>&1; then
 fi
 ldid -h >/dev/null 2>&1 && echo "ldid ok" || echo "ldid 不可用（签名会跳过）"
 
+echo "===== 3.5 修 libtinfo（Linux clang 依赖 .so.5）====="
+if ! ldconfig -p | grep -q 'libtinfo.so.5'; then
+  for cand in /lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.6; do
+    if [ -f "$cand" ]; then
+      sudo ln -sf "$cand" /usr/lib/x86_64-linux-gnu/libtinfo.so.5 2>/dev/null || \
+        ln -sf "$cand" "$HOME/.local/lib/libtinfo.so.5" 2>/dev/null || true
+      echo "已链接 libtinfo.so.5 -> $cand"
+      break
+    fi
+  done
+fi
+export LD_LIBRARY_PATH="$HOME/.local/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+
 echo "===== 4. 编译引擎 ====="
 mkdir -p "$OUT/obj"
 for f in engine/*.m; do
