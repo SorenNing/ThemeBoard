@@ -31,6 +31,7 @@ static NSMutableSet<NSValue *> *gCaches;
 static NSCache *gImageCache;      // 已生成的图标缓存
 static NSMutableDictionary<NSString *, NSString *> *gBundleRes;   // 文件名 -> Bundles 里的路径
 static NSLock *gLock;
+static int gProbeCount = 0;      // 探针日志计数（每进程上限）
 static NSUInteger gServe, gMiss;
 
 #pragma mark - 日志
@@ -297,22 +298,11 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
         if (isCal) {
             NSCalendar *cal = [NSCalendar currentCalendar];
             NSInteger day = [cal component:NSCalendarUnitDay fromDate:now];
-            NSDateFormatter *df = [[NSDateFormatter alloc] init];
-            df.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
-            df.dateFormat = @"EEE";
-            NSString *week = [df stringFromDate:now];
-
             NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
             ps.alignment = NSTextAlignmentCenter;
-
-            [week drawInRect:CGRectMake(0, size.height * 0.40, size.width, size.height * 0.18)
-              withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.13 weight:UIFontWeightSemibold],
-                               NSForegroundColorAttributeName: ink,
-                               NSParagraphStyleAttributeName: ps}];
-
             NSString *num = [NSString stringWithFormat:@"%ld", (long)day];
-            [num drawInRect:CGRectMake(0, size.height * 0.54, size.width, size.height * 0.40)
-             withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.40 weight:UIFontWeightBold],
+            [num drawInRect:CGRectMake(0, size.height * 0.52, size.width, size.height * 0.40)
+             withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.42 weight:UIFontWeightBold],
                               NSForegroundColorAttributeName: ink,
                               NSParagraphStyleAttributeName: ps}];
         } else {
@@ -519,6 +509,7 @@ static UIActivityIconFn o_activityIcon;
 
 /// ShareSheet.framework/UIActivity：分享面板里每个 App 的图标
 static UIImage *tb_activityImageForBID(id self, SEL _cmd, NSString *bid) {
+    if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe UIActivity %@", bid); }
     UIImage *img = TBImageForBundle(bid);
     if (img) { gServe++; TBLog(@"serve UIActivity %@", bid); return img; }
     return o_activityIcon ? o_activityIcon(self, _cmd, bid) : nil;
@@ -574,6 +565,7 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
     @try {
+        if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe ISIcon %@", TBBIDFromISIcon(self)); }
         UIImage *img = TBImageFromISIcon(self, descriptor);
         if (img && img.CGImage) {
             gServe++;
@@ -672,6 +664,42 @@ static UIImage *tb_imageWithFile(id self, SEL _cmd, NSString *path) {
     return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
 }
 
+#pragma mark - NSBundle 资源重定向（SpringBoard 自带的表盘/指针等）
+
+typedef NSString *(*BundlePathFn)(id, SEL, NSString *, NSString *);
+typedef NSString *(*BundlePathDirFn)(id, SEL, NSString *, NSString *, NSString *);
+static BundlePathFn o_pathForRes;
+static BundlePathDirFn o_pathForResDir;
+
+static NSString *TBResourcePathNamed(NSString *name, NSString *ext) {
+    if (!name.length || TBSafeMode() || !TBEnabled()) return nil;
+    [gLock lock];
+    TBLoadIndex();
+    NSString *theme = TBActiveTheme();
+    NSString *dir = theme.length ? TBThemeDir(theme) : nil;
+    if (dir) TBLoadBundleResources(dir);
+    NSMutableDictionary *res = gBundleRes;
+    [gLock unlock];
+    if (!res.count) return nil;
+
+    NSString *key = ext.length ? [NSString stringWithFormat:@"%@.%@", name.lowercaseString, ext.lowercaseString]
+                               : name.lowercaseString;
+    NSString *hit = res[key] ?: res[name.lowercaseString];
+    return hit;
+}
+
+static NSString *tb_pathForRes(id self, SEL _cmd, NSString *name, NSString *ext) {
+    NSString *p = TBResourcePathNamed(name, ext);
+    if (p) { TBLog(@"serve 资源路径 %@.%@", name, ext); return p; }
+    return o_pathForRes ? o_pathForRes(self, _cmd, name, ext) : nil;
+}
+
+static NSString *tb_pathForResDir(id self, SEL _cmd, NSString *name, NSString *ext, NSString *subdir) {
+    NSString *p = TBResourcePathNamed(name, ext);
+    if (p) { TBLog(@"serve 资源路径(in) %@.%@", name, ext); return p; }
+    return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
+}
+
 #pragma mark - 安装
 
 static void TBInstall(void) {
@@ -690,6 +718,12 @@ static void TBInstall(void) {
                                           (IMP)tb_imageNamed, "UIImage.imageNamed");
     o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
                                              (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
+
+    // SpringBoard 自带的表盘/指针等资源：重定向到主题里的同名文件
+    o_pathForRes = (BundlePathFn)TBHookClass([NSBundle class], @"pathForResource:ofType:",
+                                             (IMP)tb_pathForRes, "NSBundle.pathForResource");
+    o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
+                                                   (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
 
     Class isicon = NSClassFromString(@"ISIcon");
     if (isicon) {
