@@ -678,16 +678,37 @@ static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
 typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
 static ImgNameFn o_imageNamed, o_imageWithFile;
 
-static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
-    if (gProbeCount < 200 && [name rangeOfString:@"Icon"].location != NSNotFound) {
-        gProbeCount++; TBProbe(@"imageNamed %@", name);
+/// 只有这些名字才值得去查主题资源；其它一律直接放行。
+/// 注意：imageNamed / imageWithContentsOfFile 是全系统最热接口，
+/// 这里绝不能加锁或访问文件系统，否则会把进程拖死（曾导致整机重启）。
+static BOOL TBIsThemedResourceName(NSString *name) {
+    if (name.length < 6 || name.length > 48) return NO;
+    unichar c0 = [name characterAtIndex:0];
+    // 快速按首字母过滤，避免做多次字符串前缀比较
+    if (c0 != 'C' && c0 != 'A' && c0 != 'S' && c0 != 'K') return NO;
+    static NSArray<NSString *> *prefixes = nil;
+    if (!prefixes) prefixes = @[@"ClockIcon", @"ANEM", @"SBClock", @"CalendarIcon", @"Keypad"];
+    for (NSString *p in prefixes) {
+        if ([name hasPrefix:p]) return YES;
     }
+    return NO;
+}
+
+static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
+    if (!TBIsThemedResourceName(name)) {
+        return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
+    }
+    TBProbe(@"imageNamed %@", name);
     UIImage *img = TBResourceImage(name);
     if (img) { gServe++; TBLog(@"serve 资源 %@", name); return img; }
     return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
 }
 
 static UIImage *tb_imageWithFile(id self, SEL _cmd, NSString *path) {
+    NSString *last = path.lastPathComponent;
+    if (!TBIsThemedResourceName(last)) {
+        return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
+    }
     UIImage *img = TBResourceImage(path);
     if (img) { gServe++; TBLog(@"serve 资源文件 %@", path.lastPathComponent); return img; }
     return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
@@ -718,12 +739,18 @@ static NSString *TBResourcePathNamed(NSString *name, NSString *ext) {
 }
 
 static NSString *tb_pathForRes(id self, SEL _cmd, NSString *name, NSString *ext) {
+    if (!TBIsThemedResourceName(name)) {
+        return o_pathForRes ? o_pathForRes(self, _cmd, name, ext) : nil;
+    }
     NSString *p = TBResourcePathNamed(name, ext);
     if (p) { TBLog(@"serve 资源路径 %@.%@", name, ext); return p; }
     return o_pathForRes ? o_pathForRes(self, _cmd, name, ext) : nil;
 }
 
 static NSString *tb_pathForResDir(id self, SEL _cmd, NSString *name, NSString *ext, NSString *subdir) {
+    if (!TBIsThemedResourceName(name)) {
+        return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
+    }
     NSString *p = TBResourcePathNamed(name, ext);
     if (p) { TBLog(@"serve 资源路径(in) %@.%@", name, ext); return p; }
     return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
@@ -735,7 +762,10 @@ static ImgNamedBundleFn o_imageNamedBundle;
 static BundleURLResFn o_urlForRes;
 
 static UIImage *tb_imageNamedBundle(id self, SEL _cmd, NSString *name, NSBundle *bundle, UITraitCollection *tc) {
-    if (gProbeCount < 200 && name.length) { gProbeCount++; TBProbe(@"imageNamed:inBundle: %@", name); }
+    if (!TBIsThemedResourceName(name)) {
+        return o_imageNamedBundle ? o_imageNamedBundle(self, _cmd, name, bundle, tc) : nil;
+    }
+    TBProbe(@"imageNamed:inBundle: %@", name);
     UIImage *img = TBResourceImage(name);
     if (img) { TBLog(@"serve 资源(bundle) %@", name); return img; }
     return o_imageNamedBundle ? o_imageNamedBundle(self, _cmd, name, bundle, tc) : nil;
@@ -772,8 +802,6 @@ static void TBInstall(void) {
                                              (IMP)tb_pathForRes, "NSBundle.pathForResource");
     o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
                                                    (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
-    o_urlForRes = (BundleURLResFn)TBHookClass([NSBundle class], @"URLForResource:withExtension:subdirectory:",
-                                              (IMP)tb_urlForRes, "NSBundle.URLForResource");
     o_imageNamedBundle = (ImgNamedBundleFn)TBHookClass([UIImage class], @"imageNamed:inBundle:compatibleWithTraitCollection:",
                                                        (IMP)tb_imageNamedBundle, "UIImage.imageNamedInBundle");
 
