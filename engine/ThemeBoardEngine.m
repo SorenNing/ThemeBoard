@@ -41,39 +41,48 @@ static NSString *TBProcName(void) {
     return name;
 }
 
+/// 用 C 文件 API 探测可写路径（NSFileManager 的 isWritable 在 SpringBoard 里会误报 NO）
+static const char *TBLogFilePath(void) {
+    static char path[256] = {0};
+    if (path[0]) return path;
+    const char *cands[] = {
+        "/var/mobile/Library/ThemeBoard/engine.log",
+        "/var/jb/var/mobile/Library/ThemeBoard/engine.log",
+        NULL
+    };
+    for (int i = 0; cands[i]; i++) {
+        FILE *f = fopen(cands[i], "a");
+        if (f) {
+            fclose(f);
+            strncpy(path, cands[i], sizeof(path) - 1);
+            return path;
+        }
+    }
+    return NULL;
+}
+
 static void TBLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
     NSString *msg = [NSString stringWithFormat:@"[%@] %@", TBProcName(), body];
-
-    if (!gLogPath) {
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *d = @"/var/mobile/Library/ThemeBoard";
-        [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:NULL];
-        if ([fm isWritableFileAtPath:d]) {
-            gLogPath = [d stringByAppendingPathComponent:@"engine.log"];
-        }
-    }
     NSLog(@"[ThemeBoard] %@", msg);
 
-    // 超过 512KB 就截断，只留最后 200 行（之前刷到 6.4MB）
-    static int writeCount = 0;
-    if (++writeCount % 200 == 0) {
-        NSDictionary *a = [[NSFileManager defaultManager] attributesOfItemAtPath:gLogPath error:NULL];
-        if ([a[NSFileSize] unsignedLongLongValue] > 512 * 1024) {
-            NSString *all = [NSString stringWithContentsOfFile:gLogPath encoding:NSUTF8StringEncoding error:NULL];
-            NSArray *ls = [all componentsSeparatedByString:@"\n"];
-            NSUInteger keep = ls.count > 200 ? ls.count - 200 : 0;
-            NSArray *tail = [ls subarrayWithRange:NSMakeRange(keep, ls.count - keep)];
-            [[tail componentsJoinedByString:@"\n"] writeToFile:gLogPath atomically:NO
-                                                      encoding:NSUTF8StringEncoding error:NULL];
-        }
-    }
+    if (!gIsPrimary) return;                 // 只让 SpringBoard 类进程写文件
+    const char *lp = TBLogFilePath();
+    if (!lp) return;
+    if (!gLogQueue) gLogQueue = dispatch_queue_create("themeboard.log", DISPATCH_QUEUE_SERIAL);
 
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     df.dateFormat = @"HH:mm:ss";
     NSString *line = [NSString stringWithFormat:@"%@ %@\n", [df stringFromDate:[NSDate date]], msg];
+
+    dispatch_async(gLogQueue, ^{
+        FILE *f = fopen(lp, "a");
+        if (!f) return;
+        fprintf(f, "%s", [line UTF8String]);
+        fclose(f);
+    });
 }
 
 #pragma mark - 设置 / 索引
