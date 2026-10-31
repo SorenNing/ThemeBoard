@@ -825,9 +825,32 @@ static void TBHandleRespring(CFNotificationCenterRef c, void *o, CFNotificationN
                    dispatch_get_main_queue(), ^{ exit(0); });
 }
 
+/// 最原始的存活标记：用 C 文件 API 直接写，绕开一切 Objective-C 机制。
+/// 只要这个文件出现，就说明 dylib 被 dyld 加载并执行了构造器。
+static void TBTouchMarker(const char *tag) {
+    const char *paths[] = {
+        "/var/mobile/Library/ThemeBoard/alive.txt",
+        "/var/jb/var/mobile/Library/ThemeBoard/alive.txt",
+        NULL
+    };
+    for (int i = 0; paths[i]; i++) {
+        FILE *f = fopen(paths[i], "a");
+        if (!f) continue;
+        time_t t = time(NULL);
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        fprintf(f, "%02d:%02d:%02d pid=%d %s\n",
+                tmv.tm_hour, tmv.tm_min, tmv.tm_sec, getpid(), tag);
+        fclose(f);
+    }
+}
+
 __attribute__((constructor))
 static void TBMain(void) {
-    BOOL hasCache = NSClassFromString(@"SBHIconImageCache") != nil;
+    TBTouchMarker("constructor");   // 第一件事：证明自己被加载
+    BOOL hasCache = NO;
+    @try {
+    hasCache = NSClassFromString(@"SBHIconImageCache") != nil;
     BOOL hasActivity = NSClassFromString(@"UIActivity") != nil;
     BOOL hasISIcon = NSClassFromString(@"ISIcon") != nil;
     // 与图标无关的进程：静默退出，避免刷日志
@@ -849,6 +872,10 @@ static void TBMain(void) {
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBReload,
                                     (__bridge CFStringRef)kNotify, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    } @catch (NSException *e) {
+        TBTouchMarker("crash");
+    }
 
     // 心跳只在负责图标缓存的进程（SpringBoard）里跑，避免多进程反复改日志时间戳
     if (!hasCache) return;

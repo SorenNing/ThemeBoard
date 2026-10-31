@@ -102,8 +102,9 @@ static NSString *TBReadLogLossy(NSString *path) {
         for (NSUInteger i = start; i < lines.count; i++) {
             if ([lines[i] length]) [tail addObject:lines[i]];
         }
-        self.logText = [tail componentsJoinedByString:@"\n"];
-        if (!self.logText.length) self.logText = @"（日志存在但为空）";
+        NSString *body = [tail componentsJoinedByString:@"\n"];
+        if (!body.length) body = @"（日志存在但为空）";
+        self.logText = [self.logText stringByAppendingString:body];
     } else {
         self.logText = @"（没有日志）";
     }
@@ -179,7 +180,7 @@ static NSString *TBReadLogLossy(NSString *path) {
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.11.8", @"number"]];
+                          @[@"版本", @"0.11.9", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];
