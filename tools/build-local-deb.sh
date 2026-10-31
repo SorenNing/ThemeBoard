@@ -12,7 +12,7 @@ sh tools/build-app.sh >/dev/null
 
 echo "== 2/4 编译引擎（arm64e 重标记；放在 App 之后，避免被 build-app 清掉）"
 sh tools/build-local-engine.sh >/dev/null
-ENGINE=$ROOT/build-cache/ThemeBoardEngine.dylib   # CI 产物（真 arm64e，已验证可加载）
+ENGINE=$ROOT/build-cache/ThemeBoardEngine.dylib   # 已知可加载的 CI arm64e 引擎（本地产物经实测无法被 dyld 接受）
 APP=$ROOT/build/ThemeBoard.app
 mkdir -p "$APP/Engine"
 cp "$ENGINE" engine/ThemeBoardEngine.plist "$APP/Engine/"

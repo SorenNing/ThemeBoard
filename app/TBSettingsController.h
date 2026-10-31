@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import "TBTableViewController.h"
 
-@interface TBSettingsController : UITableViewController
+@interface TBSettingsController : TBTableViewController
 @end

@@ -8,7 +8,7 @@
 - (BOOL)application:(UIApplication *)application
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.window.backgroundColor = [UIColor colorWithRed:0.898 green:0.886 blue:0.867 alpha:1];
+    self.window.backgroundColor = [UIColor colorWithRed:0.870 green:0.858 blue:0.843 alpha:1];
     self.window.rootViewController = [[TBRootController alloc] init];
     [self.window makeKeyAndVisible];
 

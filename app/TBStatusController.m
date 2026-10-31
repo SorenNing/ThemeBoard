@@ -17,7 +17,8 @@
     [super viewDidLoad];
     self.title = @"状态";
     self.view.backgroundColor = [UIColor clearColor];
-    TBSetPageBackground(self);
+    // 顺序不能反：TBGlassTable 会把 backgroundColor 清成透明
+
 
     self.table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
     self.table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -26,6 +27,7 @@
     self.table.rowHeight = 52;
     self.table.estimatedSectionHeaderHeight = 24;
     TBGlassTable(self.table);
+    TBSetPageBackground(self);
     [self.view addSubview:self.table];
 
     self.navigationItem.rightBarButtonItem =
@@ -41,11 +43,8 @@
 }
 
 - (NSString *)logPath {
-    for (NSString *p in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
-                          @"/var/mobile/Library/ThemeBoard/engine.log"]) {
-        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) return p;
-    }
-    return nil;
+    // 只用这个路径（引擎就写在这里，实测 6.4MB、实时更新）
+    return @"/var/mobile/Library/ThemeBoard/engine.log";
 }
 
 - (void)refresh {
@@ -158,7 +157,7 @@
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.10.0", @"number"]];
+                          @[@"版本", @"0.11.5", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];

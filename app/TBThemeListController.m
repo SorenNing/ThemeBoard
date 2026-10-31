@@ -3,6 +3,7 @@
 #import "TBThemeScanner.h"
 #import "TBPrefs.h"
 #import "TBGlass.h"
+#import "TBTableViewController.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 // 统一的文件夹选择器：iOS14+ 走 UTType，老系统回退；任何异常都不让它崩
 static UIDocumentPickerViewController *TBNewFolderPicker(void) {
@@ -34,8 +35,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     [super viewDidLoad];
     self.title = @"主题";
     self.tableView.rowHeight = 76;
-    TBGlassTable(self.tableView);
-    TBSetPageBackground(self);
 
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.search.searchResultsUpdater = self;

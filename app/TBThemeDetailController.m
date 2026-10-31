@@ -4,6 +4,7 @@
 #import "TBPrefs.h"
 #import "TBMissingController.h"
 #import "TBGlass.h"
+#import "TBTableViewController.h"
 
 static NSString *const kSummaryID = @"summary";
 static NSString *const kGridID = @"grid";
@@ -31,8 +32,6 @@ static NSString *const kGridID = @"grid";
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = self.theme.name;
-    TBSetPageBackground(self);
-    TBGlassTable(self.tableView);
 
     [self.theme loadIndex];
     self.allBids = [self.theme bundleIdentifiers];

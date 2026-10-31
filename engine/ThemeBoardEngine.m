@@ -46,13 +46,27 @@ static void TBLog(NSString *fmt, ...) {
 
     if (!gLogPath) {
         NSFileManager *fm = [NSFileManager defaultManager];
-        for (NSString *d in @[@"/var/jb/var/mobile/Library/ThemeBoard",
-                              @"/var/mobile/Library/ThemeBoard"]) {
-            [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:NULL];
-            if ([fm isWritableFileAtPath:d]) { gLogPath = [d stringByAppendingPathComponent:@"engine.log"]; break; }
+        NSString *d = @"/var/mobile/Library/ThemeBoard";
+        [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:NULL];
+        if ([fm isWritableFileAtPath:d]) {
+            gLogPath = [d stringByAppendingPathComponent:@"engine.log"];
         }
     }
     NSLog(@"[ThemeBoard] %@", msg);
+
+    // 超过 512KB 就截断，只留最后 200 行（之前刷到 6.4MB）
+    static int writeCount = 0;
+    if (++writeCount % 200 == 0) {
+        NSDictionary *a = [[NSFileManager defaultManager] attributesOfItemAtPath:gLogPath error:NULL];
+        if ([a[NSFileSize] unsignedLongLongValue] > 512 * 1024) {
+            NSString *all = [NSString stringWithContentsOfFile:gLogPath encoding:NSUTF8StringEncoding error:NULL];
+            NSArray *ls = [all componentsSeparatedByString:@"\n"];
+            NSUInteger keep = ls.count > 200 ? ls.count - 200 : 0;
+            NSArray *tail = [ls subarrayWithRange:NSMakeRange(keep, ls.count - keep)];
+            [[tail componentsJoinedByString:@"\n"] writeToFile:gLogPath atomically:NO
+                                                      encoding:NSUTF8StringEncoding error:NULL];
+        }
+    }
 
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     df.dateFormat = @"HH:mm:ss";
@@ -88,10 +102,22 @@ static NSArray<NSString *> *TBRoots(void) {
 
 static NSString *TBThemeDir(NSString *name) {
     if (!name.length) return nil;
-    for (NSString *r in TBRoots()) {
-        NSString *p = [r stringByAppendingPathComponent:name];
-        BOOL isDir = NO;
-        if ([[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&isDir] && isDir) return p;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *names = @[ name, [name stringByAppendingString:@".theme"] ];
+    for (NSString *root in TBRoots()) {
+        for (NSString *n in names) {
+            NSString *p = [root stringByAppendingPathComponent:n];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:p isDirectory:&isDir] && isDir) return p;
+        }
+        // 再退一步：扫描该根目录，做包含匹配（大小写/空格差异也能命中）
+        for (NSString *item in [fm contentsOfDirectoryAtPath:root error:NULL]) {
+            BOOL isDir = NO;
+            NSString *p = [root stringByAppendingPathComponent:item];
+            if (![fm fileExistsAtPath:p isDirectory:&isDir] || !isDir) continue;
+            NSString *base = [item hasSuffix:@".theme"] ? [item substringToIndex:item.length - 6] : item;
+            if ([base caseInsensitiveCompare:name] == NSOrderedSame) return p;
+        }
     }
     return nil;
 }
@@ -178,7 +204,13 @@ static void TBLoadIndex(void) {
     BOOL first = (gIndex == nil);
     gIndex = map;
     gIndexTheme = theme;
-    if (first) TBLog(@"索引 %@ → %lu 个图标 (%@)", theme, (unsigned long)map.count, dir);
+    if (first) {
+        TBLog(@"索引 %@ → %lu 个图标 (%@)", theme, (unsigned long)map.count, dir);
+        if (map.count == 0) {
+            TBLog(@"⚠️ 主题目录里没有 PNG：dir=%@", dir ?: @"(未找到目录)");
+            TBLog(@"   候选根目录：%@", [TBRoots() componentsJoinedByString:@" | "]);
+        }
+    }
 }
 
 typedef struct { CGSize size; double scale; double ratio; } TBInfo;

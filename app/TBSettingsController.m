@@ -2,6 +2,7 @@
 #import "TBPrefs.h"
 #import "TBThemeScanner.h"
 #import "TBGlass.h"
+#import "TBTableViewController.h"
 #import "TBEngineInstaller.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 // 统一的文件夹选择器：iOS14+ 走 UTType，老系统回退；任何异常都不让它崩
@@ -31,8 +32,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     [super viewDidLoad];
     self.title = @"设置";
 
-    TBGlassTable(self.tableView);
-    TBSetPageBackground(self);
     self.tableView.rowHeight = 56;
 
     self.model = @[
@@ -62,7 +61,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         @"导入主题…": @"square.and.arrow.down", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
         @"重新扫描主题": @"arrow.triangle.2.circlepath", @"清除当前主题": @"trash",
         @"跟随系统深色模式": @"circle.lefthalf.filled", @"写日志": @"doc.text", @"安全模式（只记录，不换图）": @"exclamationmark.shield",
-        @"应用后清图标缓存（会注销，建议关）": @"arrow.clockwise",
+        @"应用后清图标缓存": @"arrow.clockwise",
     };
     NSMutableArray *patched = [NSMutableArray array];
     for (NSArray *sec in self.model) {

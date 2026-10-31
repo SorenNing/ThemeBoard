@@ -83,9 +83,7 @@ void TBApplyRim(UIView *v, CGFloat alpha);
 }
 - (void)tb_refresh {
     self.fill.backgroundColor = TBFillColor();
-    self.hl.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.75],
-                                             [UIColor colorWithWhite:1 alpha:0.22]);
-    TBApplyRim(self, 0.95);
+    TBApplyRim(self, 0.92);
 }
 @end
 
@@ -95,6 +93,12 @@ UIColor *TBDynamicColor(UIColor *light, UIColor *dark) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *t) {
         return t.userInterfaceStyle == UIUserInterfaceStyleDark ? dark : light;
     }];
+}
+
+
+static UIColor *TBPageBaseColor(void) {
+    return TBDynamicColor([UIColor colorWithRed:0.870 green:0.858 blue:0.843 alpha:1],
+                           [UIColor colorWithRed:0.110 green:0.104 blue:0.120 alpha:1]);
 }
 
 // MarkFont 色板：浅色暖米白 / 深色 #1B191E
@@ -108,8 +112,8 @@ static UIColor *TBPageBottomColor(void) {
 }
 
 static UIColor *TBFillColor(void) {
-    return TBDynamicColor([UIColor colorWithWhite:1 alpha:0.42],
-                          [UIColor colorWithWhite:1 alpha:0.12]);
+    return TBDynamicColor([UIColor colorWithWhite:1 alpha:0.34],
+                          [UIColor colorWithWhite:1 alpha:0.10]);
 }
 
 static UIColor *TBRimColor(CGFloat alpha) {
@@ -131,7 +135,7 @@ UIView *TBGlassCard(CGFloat radius) {
     card.backgroundColor = [UIColor clearColor];
 
     UIVisualEffectView *blur =
-        [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+        [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
     blur.translatesAutoresizingMaskIntoConstraints = NO;
     blur.userInteractionEnabled = NO;
     [card insertSubview:blur atIndex:0];
@@ -153,19 +157,8 @@ UIView *TBGlassCard(CGFloat radius) {
         [fill.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
     ]];
 
-    UIView *hl = [[UIView alloc] init];
-    hl.translatesAutoresizingMaskIntoConstraints = NO;
-    hl.userInteractionEnabled = NO;
-    [card addSubview:hl];
-    [NSLayoutConstraint activateConstraints:@[
-        [hl.topAnchor constraintEqualToAnchor:card.topAnchor],
-        [hl.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
-        [hl.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
-        [hl.heightAnchor constraintEqualToConstant:1.0],
-    ]];
-
     card.fill = fill;
-    card.hl = hl;
+    card.hl = nil;
     [card tb_refresh];
     return card;
 }
@@ -213,28 +206,37 @@ static UIImage *TBPagePatternImage(void) {
         CGGradientRelease(grad);
         CGColorSpaceRelease(sp);
 
-        CGFloat alpha = isDark ? 0.14 : 0.22;
+        CGFloat alpha = isDark ? 0.18 : 0.30;
+        CGColorSpaceRef sp2 = CGColorSpaceCreateDeviceRGB();
         NSArray *blobs = @[@[@(-0.15), @(-0.05), @(0.98), @(0.78), @(0.62)],
                            @[@( 0.55), @( 0.30), @(0.62), @(0.86), @(0.95)],
                            @[@( 0.15), @( 0.55), @(0.55), @(0.72), @(1.00)]];
         for (NSArray *bl in blobs) {
-            UIColor *dot = [UIColor colorWithRed:[bl[2] doubleValue] green:[bl[3] doubleValue]
-                                           blue:[bl[4] doubleValue] alpha:alpha];
-            CGContextSetFillColorWithColor(c, dot.CGColor);
-            CGRect rect = CGRectMake([bl[0] doubleValue] * size.width - 220,
-                                     [bl[1] doubleValue] * size.height - 220, 440, 440);
-            CGContextFillEllipseInRect(c, rect);
+            CGPoint ctr = CGPointMake([bl[0] doubleValue] * size.width, [bl[1] doubleValue] * size.height);
+            UIColor *col = [UIColor colorWithRed:[bl[2] doubleValue] green:[bl[3] doubleValue]
+                                            blue:[bl[4] doubleValue] alpha:alpha];
+            UIColor *clear = [col colorWithAlphaComponent:0.0];
+            const CGFloat *cc = CGColorGetComponents(col.CGColor);
+            const CGFloat *c0 = CGColorGetComponents(clear.CGColor);
+            CGFloat comps[8] = { cc[0], cc[1], cc[2], cc[3], c0[0], c0[1], c0[2], 0.0 };
+            CGGradientRef grad2 = CGGradientCreateWithColorComponents(sp2, comps, NULL, 2);
+            CGContextDrawRadialGradient(c, grad2, ctr, 0, ctr, 260, 0);
+            CGGradientRelease(grad2);
         }
+        CGColorSpaceRelease(sp2);
     }];
     if (isDark) dark = img; else light = img;
     return img;
 }
 
+void TBApplyPageBackground(UIView *host) {
+    if (!host) return;
+    host.backgroundColor = TBPageBaseColor();
+}
+
 void TBSetPageBackground(UIViewController *vc) {
     if (!vc) return;
-    // 关键：用不透明的图案图当 backgroundColor —— 不是子视图，所以不随滚动；
-    // 转场时新页整片不透明，旧页被完全覆盖，不可能再"透明"
-    vc.view.backgroundColor = [UIColor colorWithPatternImage:TBPagePatternImage()];
+    vc.view.backgroundColor = TBPageBaseColor();
     if ([vc isKindOfClass:[UITableViewController class]]) {
         ((UITableViewController *)vc).tableView.backgroundColor = [UIColor clearColor];
     }
@@ -242,27 +244,12 @@ void TBSetPageBackground(UIViewController *vc) {
 
 void TBAttachFrostContainer(UIView *host) {
     if (!host) return;
-    NSInteger tag = 0x7B41;
-    for (UIView *v in host.subviews) if (v.tag == tag) return;
-
-    UIView *bg = [[UIView alloc] initWithFrame:host.bounds];
-    bg.tag = tag;
-    bg.userInteractionEnabled = NO;
-    bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-
-    CAGradientLayer *g = [CAGradientLayer layer];
-    g.frame = host.bounds;
-    g.colors = @[ (id)[UIColor systemGroupedBackgroundColor].CGColor,
-                  (id)[UIColor secondarySystemGroupedBackgroundColor].CGColor ];
-    g.startPoint = CGPointMake(0, 0);
-    g.endPoint = CGPointMake(0, 1);
-    [bg.layer addSublayer:g];
-    [host insertSubview:bg atIndex:0];
+    host.backgroundColor = TBPageBaseColor();
 }
 
 void TBAttachWindowFrost(UIWindow *window) {
     if (!window) return;
-    window.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    window.backgroundColor = TBPageBaseColor();
 }
 
 void TBAttachFrost(UIView *host) {
@@ -272,10 +259,6 @@ void TBAttachFrost(UIView *host) {
 UIView *TBGlassCellBG(CGFloat inset) {
     UIView *bg = [[UIView alloc] init];
     bg.backgroundColor = [UIColor clearColor];
-    bg.layer.shadowColor = [UIColor blackColor].CGColor;
-    bg.layer.shadowOpacity = 0.07;
-    bg.layer.shadowRadius = 8;
-    bg.layer.shadowOffset = CGSizeMake(0, 2);
     UIView *card = TBGlassCard(20);
     card.translatesAutoresizingMaskIntoConstraints = NO;
     [bg addSubview:card];
@@ -289,6 +272,8 @@ UIView *TBGlassCellBG(CGFloat inset) {
 }
 
 void TBGlassTable(UITableView *tv) {
+    // 表格背景必须透明，否则它会盖住页面底色（默认是白色）
+    // 页面底色由 TBSetPageBackground / TBTableViewController 的背景视图提供
     tv.backgroundColor = [UIColor clearColor];
     tv.separatorStyle = UITableViewCellSeparatorStyleNone;
     tv.backgroundView = nil;

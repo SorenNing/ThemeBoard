@@ -3,6 +3,9 @@
 /// 动态色（浅色 / 深色各一份）
 UIColor *TBDynamicColor(UIColor *light, UIColor *dark);
 
+/// 给一个普通视图铺上页面背景（渐变 + 柔光斑），供表格页基类使用
+void TBApplyPageBackground(UIView *host);
+
 /// 给单个页面铺不透明背景（表格页走 backgroundView，不会随滚动跑）
 void TBSetPageBackground(UIViewController *vc);
 

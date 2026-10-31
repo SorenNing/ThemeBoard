@@ -1,6 +1,7 @@
 #import "TBMissingController.h"
 #import "TBAppInfo.h"
 #import "TBGlass.h"
+#import "TBTableViewController.h"
 
 @implementation TBMissingController {
     TBTheme *_theme;
@@ -25,8 +26,6 @@
     [super viewDidLoad];
     self.title = @"缺少图标";
     self.tableView.rowHeight = 60;
-    TBGlassTable(self.tableView);
-    TBSetPageBackground(self);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
