@@ -8,6 +8,7 @@
 
 static NSString *const kDomain = @"com.ning.themeboard";
 static NSString *const kNotify = @"com.ning.themeboard.changed";
+static NSString *const kRespring = @"com.ning.themeboard.respring";
 static NSString *const kActiveTheme = @"ActiveTheme";
 static NSString *const kEnabled = @"Enabled";
 
@@ -815,6 +816,15 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
     }
 }
 
+/// App 请求重启桌面：让 SpringBoard 退出，系统会自动把它拉起来（等效 respring）
+static void TBHandleRespring(CFNotificationCenterRef c, void *o, CFNotificationName n,
+                             const void *obj, CFDictionaryRef info) {
+    if (!gIsPrimary) return;
+    TBLog(@"收到重启桌面请求 → 退出 SpringBoard");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ exit(0); });
+}
+
 __attribute__((constructor))
 static void TBMain(void) {
     BOOL hasCache = NSClassFromString(@"SBHIconImageCache") != nil;
@@ -832,6 +842,10 @@ static void TBMain(void) {
         TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
     }
     TBInstall();
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBHandleRespring,
+                                    (__bridge CFStringRef)kRespring, NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBReload,
                                     (__bridge CFStringRef)kNotify, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);

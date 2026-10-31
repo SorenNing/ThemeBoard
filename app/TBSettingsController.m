@@ -35,7 +35,8 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     self.tableView.rowHeight = 56;
 
     self.model = @[
-        @[ @{@"t": @"引擎状态", @"act": @"engineInfo"} ],
+        @[ @{@"t": @"引擎状态", @"act": @"engineInfo"},
+           @{@"t": @"重启桌面（让引擎生效）", @"act": @"respring"} ],
         @[ @{@"t": @"启用引擎", @"k": TBKeyEnabled, @"v": @YES, @"d": @"关闭后完全恢复系统原样"} ],
         @[ @{@"t": @"程序坞", @"k": TBKeyApplyDock, @"v": @YES},
            @{@"t": @"文件夹预览", @"k": TBKeyApplyFolder, @"v": @YES},
@@ -54,7 +55,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
 
     // 每行配一个 SF Symbol
     NSDictionary *icons = @{
-        @"引擎状态": @"waveform.path.ecg", @"安装 / 更新引擎": @"arrow.down.circle",
+        @"引擎状态": @"waveform.path.ecg", @"重启桌面（让引擎生效）": @"arrow.clockwise.circle", @"安装 / 更新引擎": @"arrow.down.circle",
         @"重启桌面": @"arrow.clockwise.circle",
         @"启用引擎": @"power", @"程序坞": @"dock.rectangle", @"文件夹预览": @"folder",
         @"App 切换器": @"rectangle.stack", @"设置页图标": @"gearshape", @"分享面板": @"square.and.arrow.up",
@@ -190,6 +191,17 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         if (!picker) { [self alert:@"打不开" msg:@"系统没有可用的文件夹选择器"]; return; }
         picker.delegate = self;
         [self presentViewController:picker animated:YES completion:nil];
+    } else if ([act isEqualToString:@"respring"]) {
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"重启桌面？"
+            message:@"屏幕会黑一下然后回到桌面，正在运行的应用会被关闭。装完新引擎后用一次即可。"
+            preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"重启" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a) {
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                 (__bridge CFStringRef)@"com.ning.themeboard.respring",
+                                                 NULL, NULL, true);
+        }]];
+        [self presentViewController:ac animated:YES completion:nil];
     } else if ([act isEqualToString:@"open"]) {
         [self openThemeFolder];
     } else if ([act isEqualToString:@"rescan"]) {
