@@ -1,0 +1,18 @@
+# Cirrus CI：公开仓库免费提供 macOS runner，用来绕开 GitHub Actions 的 macOS 额度限制
+# 使用方式：到 https://cirrus-ci.com 用 GitHub 账号登录并授权本仓库，之后每次 push 自动构建
+task:
+  name: macOS 构建（App arm64 + 引擎 arm64e）
+  macos_instance:
+    image: ghcr.io/cirruslabs/macos-sonoma-xcode:latest
+
+  install_script:
+    - sw_vers
+    - xcodebuild -version
+    - xcrun --sdk iphoneos --show-sdk-version
+
+  build_script:
+    - bash tools/ci-build.sh
+
+  always:
+    binaries_artifacts:
+      path: "dist/*.deb"

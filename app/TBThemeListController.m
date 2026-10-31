@@ -193,10 +193,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     if (indexPath.section == 0) {
         NSString *active = [self activeThemeName];
         TBTheme *t = active ? [TBThemeScanner themeNamed:active] : nil;
-        cell.textLabel.textColor = t ? [UIColor labelColor] : [UIColor secondaryLabelColor];
+        [t loadIndex];   // 缺这行导致“当前使用”显示 0 个图标
         cell.textLabel.text = t ? t.name : @"未应用主题";
         cell.textLabel.textColor = t ? [UIColor labelColor] : [UIColor secondaryLabelColor];
-        cell.detailTextLabel.text = t ? [NSString stringWithFormat:@"%lu 个图标", (unsigned long)t.iconCount]
+        cell.detailTextLabel.text = t ? [NSString stringWithFormat:@"%lu 个图标 · 已应用", (unsigned long)t.iconCount]
                                       : @"从下方选择一个主题";
         cell.imageView.image = t ? [self thumbFor:t] : [UIImage systemImageNamed:@"circle.dashed"];
         cell.accessoryType = UITableViewCellAccessoryNone;

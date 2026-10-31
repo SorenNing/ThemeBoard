@@ -67,6 +67,14 @@
 
     if (path) {
         NSString *log = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+        if (log.length == 0) {
+            // 引擎可能写在了另一个映射路径；把能找到的所有候选都试一遍
+            for (NSString *alt in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
+                                    @"/var/mobile/Library/ThemeBoard/engine.log"]) {
+                NSString *l2 = [NSString stringWithContentsOfFile:alt encoding:NSUTF8StringEncoding error:NULL];
+                if (l2.length) { log = l2; path = alt; break; }
+            }
+        }
         NSArray *lines = [log componentsSeparatedByString:@"\n"];
         NSUInteger start = lines.count > 40 ? lines.count - 40 : 0;
         NSMutableArray *tail = [NSMutableArray array];
@@ -74,6 +82,7 @@
             if ([lines[i] length]) [tail addObject:lines[i]];
         }
         self.logText = [tail componentsJoinedByString:@"\n"];
+        if (!self.logText.length) self.logText = @"（日志存在但为空）";
     } else {
         self.logText = @"（没有日志）";
     }
@@ -149,7 +158,7 @@
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.9.2", @"number"]];
+                          @[@"版本", @"0.10.0", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];

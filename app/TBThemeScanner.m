@@ -14,12 +14,7 @@ static NSString *TBContainerThemes(void) {
 }
 
 static NSArray<NSString *> *TBRootCandidates(void) {
-    return @[
-        @"/var/jb/Library/Themes",
-        @"/var/mobile/Library/Themes",
-        @"/Library/Themes",
-        @"/var/jb/var/mobile/Library/Themes",
-    ];
+    return @[];   // RootHide 下只有 App 容器可用，别再列出看不见的路径
 }
 
 @implementation TBThemeScanner

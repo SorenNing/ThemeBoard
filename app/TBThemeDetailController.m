@@ -5,14 +5,16 @@
 #import "TBMissingController.h"
 #import "TBGlass.h"
 
-@interface TBThemeDetailController () <UICollectionViewDataSource, UICollectionViewDelegate, UISearchResultsUpdating>
+static NSString *const kSummaryID = @"summary";
+static NSString *const kGridID = @"grid";
+
+@interface TBThemeDetailController () <UISearchResultsUpdating>
 @property (nonatomic, strong) TBTheme *theme;
 @property (nonatomic, strong) NSArray<NSString *> *allBids;
 @property (nonatomic, strong) NSArray<NSString *> *bids;
-@property (nonatomic, strong) UICollectionView *grid;
-@property (nonatomic, strong) UIButton *applyButton;
-@property (nonatomic, strong) UILabel *coverageLabel;
 @property (nonatomic, strong) UISearchController *search;
+@property (nonatomic, strong) UILabel *summaryLabel;
+@property (nonatomic, strong) UIButton *applyButton;
 @property (nonatomic, assign) NSUInteger covered;
 @property (nonatomic, assign) NSUInteger installed;
 @end
@@ -20,7 +22,7 @@
 @implementation TBThemeDetailController
 
 - (instancetype)initWithTheme:(TBTheme *)theme {
-    if ((self = [super initWithNibName:nil bundle:nil])) {
+    if ((self = [super initWithStyle:UITableViewStylePlain])) {
         _theme = theme;
     }
     return self;
@@ -28,13 +30,15 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor clearColor];
-    TBSetPageBackground(self);
     self.title = self.theme.name;
+    TBSetPageBackground(self);
+    TBGlassTable(self.tableView);
 
     [self.theme loadIndex];
     self.allBids = [self.theme bundleIdentifiers];
     self.bids = self.allBids;
+
+    [self computeCoverage];
 
     self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.search.searchResultsUpdater = self;
@@ -43,9 +47,9 @@
     self.navigationItem.searchController = self.search;
     self.navigationItem.hidesSearchBarWhenScrolling = YES;
 
-    [self computeCoverage];
-    [self buildHeader];
-    [self buildGrid];
+    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kSummaryID];
+    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:kGridID];
+    [self.tableView reloadData];
     [self refreshApplyButton];
 }
 
@@ -59,89 +63,6 @@
     self.covered = hit;
 }
 
-- (void)buildHeader {
-    UIView *card = TBGlassCard(24);
-    card.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:card];
-
-    UIImageView *cover = [[UIImageView alloc] init];
-    cover.translatesAutoresizingMaskIntoConstraints = NO;
-    cover.image = [self.theme coverImageWithSize:120];
-    cover.contentMode = UIViewContentModeScaleAspectFit;
-    cover.layer.cornerRadius = 12;
-    cover.layer.cornerCurve = kCACornerCurveContinuous;
-    cover.clipsToBounds = YES;
-    [card addSubview:cover];
-
-    UILabel *count = [[UILabel alloc] init];
-    count.translatesAutoresizingMaskIntoConstraints = NO;
-    count.text = [NSString stringWithFormat:@"%lu 个图标", (unsigned long)self.allBids.count];
-    count.font = [UIFont systemFontOfSize:28 weight:UIFontWeightBold];
-    [card addSubview:count];
-
-    self.coverageLabel = [[UILabel alloc] init];
-    self.coverageLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.coverageLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-    self.coverageLabel.textColor = [UIColor secondaryLabelColor];
-    self.coverageLabel.text = [NSString stringWithFormat:@"覆盖 %lu / %lu 个已装应用 · %lu 个文件",
-                               (unsigned long)self.covered, (unsigned long)self.installed,
-                               (unsigned long)self.theme.fileCount];
-    [card addSubview:self.coverageLabel];
-
-    self.applyButton = TBGlassButton(@"应用这个主题", NO);
-    [self.applyButton addTarget:self action:@selector(applyTapped) forControlEvents:UIControlEventTouchUpInside];
-    [card addSubview:self.applyButton];
-
-    [NSLayoutConstraint activateConstraints:@[
-        [card.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [card.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [card.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-
-        [cover.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
-        [cover.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [cover.widthAnchor constraintEqualToConstant:60],
-        [cover.heightAnchor constraintEqualToConstant:60],
-
-        [count.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
-        [count.leadingAnchor constraintEqualToAnchor:cover.trailingAnchor constant:14],
-
-        [self.coverageLabel.topAnchor constraintEqualToAnchor:count.bottomAnchor constant:2],
-        [self.coverageLabel.leadingAnchor constraintEqualToAnchor:cover.trailingAnchor constant:14],
-        [self.coverageLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18],
-
-        [self.applyButton.topAnchor constraintEqualToAnchor:self.coverageLabel.bottomAnchor constant:14],
-        [self.applyButton.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [self.applyButton.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [self.applyButton.heightAnchor constraintEqualToConstant:46],
-        [self.applyButton.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
-    ]];
-}
-
-- (void)buildGrid {
-    UICollectionViewFlowLayout *fl = [[UICollectionViewFlowLayout alloc] init];
-    CGFloat w = ([UIScreen mainScreen].bounds.size.width - 14 * 2 - 10 * 3) / 4.0;
-    fl.itemSize = CGSizeMake(w, w + 22);
-    fl.minimumInteritemSpacing = 10;
-    fl.minimumLineSpacing = 14;
-    fl.sectionInset = UIEdgeInsetsMake(12, 14, 30, 14);
-
-    self.grid = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:fl];
-    self.grid.translatesAutoresizingMaskIntoConstraints = NO;
-    self.grid.backgroundColor = [UIColor clearColor];
-    self.grid.dataSource = self;
-    self.grid.delegate = self;
-    [self.grid registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"cell"];
-    [self.view addSubview:self.grid];
-
-    UIView *card = self.view.subviews.firstObject;
-    [NSLayoutConstraint activateConstraints:@[
-        [self.grid.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:4],
-        [self.grid.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.grid.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.grid.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-    ]];
-}
-
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshApplyButton];
@@ -151,20 +72,14 @@
     BOOL active = [[TBPrefs stringForKey:TBKeyActiveTheme] isEqualToString:self.theme.name];
     [self.applyButton setTitle:(active ? @"已应用" : @"应用这个主题") forState:UIControlStateNormal];
     self.applyButton.alpha = active ? 0.55 : 1.0;
-    if (active) {
-        self.navigationItem.rightBarButtonItem = [self missingButton];
-    } else {
-        self.navigationItem.rightBarButtonItems = @[[self missingButton],
-            [[UIBarButtonItem alloc] initWithTitle:@"应用" style:UIBarButtonItemStyleDone
-                                            target:self action:@selector(applyTapped)]];
-    }
-}
-
-- (UIBarButtonItem *)missingButton {
     NSUInteger miss = self.installed > self.covered ? self.installed - self.covered : 0;
-    return [[UIBarButtonItem alloc] initWithTitle:(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖")
-                                           style:UIBarButtonItemStylePlain
-                                          target:self action:@selector(missingTapped)];
+    self.navigationItem.rightBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithTitle:(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖")
+                                         style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(missingTapped)],
+        [[UIBarButtonItem alloc] initWithTitle:@"应用" style:UIBarButtonItemStyleDone
+                                        target:self action:@selector(applyTapped)],
+    ];
 }
 
 - (void)missingTapped {
@@ -176,10 +91,8 @@
     [TBPrefs setBool:YES forKey:TBKeyEnabled];
     [TBPrefs notifyChanged];
     [self refreshApplyButton];
-
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"已应用"
-        message:@"设置已写入。引擎生效后桌面会立即换图；引擎未安装时需要先装引擎。"
-        preferredStyle:UIAlertControllerStyleAlert];
+        message:@"设置已写入。引擎生效后桌面会立即换图。" preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:ac animated:YES completion:nil];
 }
@@ -195,61 +108,165 @@
             NSString *tail = [[bid componentsSeparatedByString:@"."] lastObject];
             if ([[tail lowercaseString] rangeOfString:q2].location != NSNotFound) return YES;
             NSString *name = [TBAppInfo displayNameForBundleID:bid];
-            if (name && [[name lowercaseString] rangeOfString:q2].location != NSNotFound) return YES;
-            return NO;
+            return name && [[name lowercaseString] rangeOfString:q2].location != NSNotFound;
         }]];
     }
-    [self.grid reloadData];
+    [self.tableView reloadData];
 }
 
-#pragma mark - Collection
+#pragma mark - Table
 
-- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
-    return self.bids.count;
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)t { return 2; }
+
+- (NSString *)tableView:(UITableView *)t titleForHeaderInSection:(NSInteger)s {
+    return s == 0 ? nil : @"全部图标";
 }
 
-- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)indexPath {
-    UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"cell" forIndexPath:indexPath];
-    cell.selectedBackgroundView = [[UIView alloc] init];
-    cell.selectedBackgroundView.backgroundColor = [UIColor clearColor];
+- (NSInteger)tableView:(UITableView *)t numberOfRowsInSection:(NSInteger)s {
+    return s == 0 ? 1 : self.bids.count;
+}
+
+- (CGFloat)tableView:(UITableView *)t heightForRowAtIndexPath:(NSIndexPath *)ip {
+    return ip.section == 0 ? 190 : 88;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 0) {
+        UITableViewCell *cell = [t dequeueReusableCellWithIdentifier:kSummaryID forIndexPath:ip];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = [UIColor clearColor];
+        cell.contentView.backgroundColor = [UIColor clearColor];
+        cell.backgroundView = TBGlassCellBG(12);
+
+        for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
+
+        // 横排 5 个小预览
+        UIView *prev = nil;
+        NSMutableArray<UIImage *> *thumbs = [NSMutableArray array];
+        for (NSString *bid in [self.theme bundleIdentifiers]) {
+            if (thumbs.count >= 5) break;
+            UIImage *img = [self.theme imageForBundleID:bid];
+            if (img) [thumbs addObject:img];
+        }
+        while (thumbs.count < 5) [thumbs addObject:[UIImage systemImageNamed:@"app"]];
+        for (UIImage *img in thumbs) {
+            UIImageView *iv = [[UIImageView alloc] initWithImage:img];
+            iv.translatesAutoresizingMaskIntoConstraints = NO;
+            iv.contentMode = UIViewContentModeScaleAspectFill;
+            iv.layer.cornerRadius = 8;
+            iv.layer.cornerCurve = kCACornerCurveContinuous;
+            iv.clipsToBounds = YES;
+            [cell.contentView addSubview:iv];
+            [NSLayoutConstraint activateConstraints:@[
+                [iv.widthAnchor constraintEqualToConstant:36],
+                [iv.heightAnchor constraintEqualToConstant:36],
+                [iv.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:14],
+                (prev ? [iv.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:7]
+                      : [iv.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16]),
+            ]];
+            prev = iv;
+        }
+
+        UILabel *summary = [[UILabel alloc] init];
+        summary.translatesAutoresizingMaskIntoConstraints = NO;
+        summary.numberOfLines = 0;
+        summary.font = [UIFont systemFontOfSize:13];
+        summary.textColor = [UIColor secondaryLabelColor];
+        summary.text = [NSString stringWithFormat:@"%lu 个图标\n覆盖 %lu / %lu 个已装应用 · %lu 个文件",
+                        (unsigned long)self.allBids.count, (unsigned long)self.covered,
+                        (unsigned long)self.installed, (unsigned long)self.theme.fileCount];
+        [cell.contentView addSubview:summary];
+
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        btn.translatesAutoresizingMaskIntoConstraints = NO;
+        btn.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        BOOL active = [[TBPrefs stringForKey:TBKeyActiveTheme] isEqualToString:self.theme.name];
+        [btn setTitle:(active ? @"已应用" : @"应用这个主题") forState:UIControlStateNormal];
+        btn.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                             [UIColor colorWithWhite:1 alpha:0.14]);
+        [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        btn.layer.cornerRadius = 13;
+        btn.layer.cornerCurve = kCACornerCurveContinuous;
+        TBApplyRim(btn, 0.55);
+        [btn addTarget:self action:@selector(applyTapped) forControlEvents:UIControlEventTouchUpInside];
+        [cell.contentView addSubview:btn];
+        self.applyButton = btn;
+
+        [NSLayoutConstraint activateConstraints:@[
+            [summary.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:58],
+            [summary.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:18],
+            [summary.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-18],
+
+            [btn.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
+            [btn.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [btn.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [btn.heightAnchor constraintEqualToConstant:44],
+            [btn.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-14],
+        ]];
+        return cell;
+    }
+
+    // 图标行
+    UITableViewCell *cell = [t dequeueReusableCellWithIdentifier:kGridID forIndexPath:ip];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    cell.backgroundView = TBGlassCellBG(12);
+    cell.selectedBackgroundView = nil;
     for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
 
-    NSString *bid = self.bids[indexPath.row];
-    CGFloat w = ([UIScreen mainScreen].bounds.size.width - 14 * 2 - 10 * 3) / 4.0;
+    NSString *bid = self.bids[ip.row];
+    CGFloat side = 56;
 
-    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, w, w)];
-    iv.image = [self.theme imageForBundleID:bid];
+    UIImageView *iv = [[UIImageView alloc] initWithImage:[self.theme imageForBundleID:bid]];
+    iv.translatesAutoresizingMaskIntoConstraints = NO;
     iv.contentMode = UIViewContentModeScaleAspectFit;
-    iv.layer.cornerRadius = w * 0.2237;
+    iv.layer.cornerRadius = side * 0.2237;
     iv.layer.cornerCurve = kCACornerCurveContinuous;
     iv.clipsToBounds = YES;
     [cell.contentView addSubview:iv];
 
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, w + 4, w, 16)];
-    NSString *name = [TBAppInfo displayNameForBundleID:bid];
-    label.text = name.length ? name : [bid componentsSeparatedByString:@"."].lastObject;
-    label.font = [UIFont systemFontOfSize:9.5];
-    label.textColor = [UIColor secondaryLabelColor];
-    label.textAlignment = NSTextAlignmentCenter;
-    label.lineBreakMode = NSLineBreakByTruncatingTail;
-    [cell.contentView addSubview:label];
+    UILabel *name = [[UILabel alloc] init];
+    name.translatesAutoresizingMaskIntoConstraints = NO;
+    NSString *dn = [TBAppInfo displayNameForBundleID:bid];
+    name.text = dn.length ? dn : [bid componentsSeparatedByString:@"."].lastObject;
+    name.font = [UIFont systemFontOfSize:14];
+    name.textColor = [UIColor labelColor];
+    name.lineBreakMode = NSLineBreakByTruncatingTail;
+    [cell.contentView addSubview:name];
+
+    UILabel *sub = [[UILabel alloc] init];
+    sub.translatesAutoresizingMaskIntoConstraints = NO;
+    sub.text = bid;
+    sub.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    sub.textColor = [UIColor secondaryLabelColor];
+    sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [cell.contentView addSubview:sub];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [iv.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+        [iv.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:14],
+        [iv.widthAnchor constraintEqualToConstant:side],
+        [iv.heightAnchor constraintEqualToConstant:side],
+
+        [name.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:18],
+        [name.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:12],
+        [name.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-14],
+
+        [sub.topAnchor constraintEqualToAnchor:name.bottomAnchor constant:2],
+        [sub.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:12],
+        [sub.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-14],
+    ]];
     return cell;
 }
 
-- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
-    NSString *bid = self.bids[indexPath.row];
-    UIImage *img = [self.theme imageForBundleID:bid];
-    NSString *name = [TBAppInfo displayNameForBundleID:bid] ?: bid;
-
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:name
-                                                               message:bid
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    CGFloat s = 160;
-    UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake((270 - s) / 2, 56, s, s)];
-    iv.image = img;
-    iv.contentMode = UIViewContentModeScaleAspectFit;
-    [ac.view addSubview:iv];
+- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [t deselectRowAtIndexPath:ip animated:YES];
+    if (ip.section != 1) return;
+    NSString *bid = self.bids[ip.row];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:
+                             [TBAppInfo displayNameForBundleID:bid] ?: bid message:bid
+                             preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"复制文件名" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         [UIPasteboard generalPasteboard].string = [NSString stringWithFormat:@"%@.png", bid];
     }]];

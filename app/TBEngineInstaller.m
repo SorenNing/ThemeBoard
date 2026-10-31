@@ -29,8 +29,8 @@ static NSString *const kPlistName = @"ThemeBoardEngine.plist";
 
 + (NSString *)runtimeState {
     NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *p in @[@"/var/mobile/Library/ThemeBoard/engine.log",
-                          @"/var/jb/var/mobile/Library/ThemeBoard/engine.log"]) {
+    for (NSString *p in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
+                          @"/var/mobile/Library/ThemeBoard/engine.log"]) {
         NSDictionary *attrs = [fm attributesOfItemAtPath:p error:NULL];
         if (!attrs) continue;
         NSDate *mt = attrs[NSFileModificationDate];

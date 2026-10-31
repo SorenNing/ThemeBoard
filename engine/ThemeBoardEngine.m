@@ -46,24 +46,17 @@ static void TBLog(NSString *fmt, ...) {
 
     if (!gLogPath) {
         NSFileManager *fm = [NSFileManager defaultManager];
-        for (NSString *d in @[@"/var/jb/var/mobile/Library/ThemeBoard", @"/var/mobile/Library/ThemeBoard"]) {
+        for (NSString *d in @[@"/var/jb/var/mobile/Library/ThemeBoard",
+                              @"/var/mobile/Library/ThemeBoard"]) {
             [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:NULL];
             if ([fm isWritableFileAtPath:d]) { gLogPath = [d stringByAppendingPathComponent:@"engine.log"]; break; }
         }
     }
     NSLog(@"[ThemeBoard] %@", msg);
-    if (!gLogPath) return;
 
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     df.dateFormat = @"HH:mm:ss";
     NSString *line = [NSString stringWithFormat:@"%@ %@\n", [df stringFromDate:[NSDate date]], msg];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:gLogPath];
-    if (!fh) {
-        [line writeToFile:gLogPath atomically:NO encoding:NSUTF8StringEncoding error:NULL];
-    } else {
-        @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; [fh closeFile]; }
-        @catch (NSException *e) {}
-    }
 }
 
 #pragma mark - 设置 / 索引

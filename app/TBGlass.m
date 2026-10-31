@@ -185,19 +185,58 @@ UIButton *TBGlassButton(NSString *title, BOOL danger) {
     return b;
 }
 
+static UIImage *TBPagePatternImage(void) {
+    static UIImage *light = nil, *dark = nil;
+    BOOL isDark = (UITraitCollection.currentTraitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    UIImage *cached = isDark ? dark : light;
+    if (cached) return cached;
+
+    CGSize size = [UIScreen mainScreen].bounds.size;
+    if (size.width < 1) size = CGSizeMake(390, 844);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.opaque = YES;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
+    UIImage *img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef c = ctx.CGContext;
+        UIColor *top = isDark ? [UIColor colorWithRed:0.125 green:0.118 blue:0.137 alpha:1]
+                              : [UIColor colorWithRed:0.898 green:0.886 blue:0.867 alpha:1];
+        UIColor *bot = isDark ? [UIColor colorWithRed:0.098 green:0.090 blue:0.110 alpha:1]
+                              : [UIColor colorWithRed:0.855 green:0.843 blue:0.827 alpha:1];
+        CGColorSpaceRef sp = CGColorSpaceCreateDeviceRGB();
+        CGFloat comps[8] = {0,0,0,0,0,0,0,0};
+        const CGFloat *t = CGColorGetComponents(top.CGColor);
+        const CGFloat *b = CGColorGetComponents(bot.CGColor);
+        comps[0]=t[0]; comps[1]=t[1]; comps[2]=t[2]; comps[3]=1;
+        comps[4]=b[0]; comps[5]=b[1]; comps[6]=b[2]; comps[7]=1;
+        CGGradientRef grad = CGGradientCreateWithColorComponents(sp, comps, NULL, 2);
+        CGContextDrawLinearGradient(c, grad, CGPointMake(0, 0), CGPointMake(size.width, size.height), 0);
+        CGGradientRelease(grad);
+        CGColorSpaceRelease(sp);
+
+        CGFloat alpha = isDark ? 0.14 : 0.22;
+        NSArray *blobs = @[@[@(-0.15), @(-0.05), @(0.98), @(0.78), @(0.62)],
+                           @[@( 0.55), @( 0.30), @(0.62), @(0.86), @(0.95)],
+                           @[@( 0.15), @( 0.55), @(0.55), @(0.72), @(1.00)]];
+        for (NSArray *bl in blobs) {
+            UIColor *dot = [UIColor colorWithRed:[bl[2] doubleValue] green:[bl[3] doubleValue]
+                                           blue:[bl[4] doubleValue] alpha:alpha];
+            CGContextSetFillColorWithColor(c, dot.CGColor);
+            CGRect rect = CGRectMake([bl[0] doubleValue] * size.width - 220,
+                                     [bl[1] doubleValue] * size.height - 220, 440, 440);
+            CGContextFillEllipseInRect(c, rect);
+        }
+    }];
+    if (isDark) dark = img; else light = img;
+    return img;
+}
+
 void TBSetPageBackground(UIViewController *vc) {
     if (!vc) return;
-    UIView *bg = [[TBGradientView alloc] initWithFrame:CGRectMake(0, 0,
-        [UIScreen mainScreen].bounds.size.width, [UIScreen mainScreen].bounds.size.height)];
-    bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-
+    // 关键：用不透明的图案图当 backgroundColor —— 不是子视图，所以不随滚动；
+    // 转场时新页整片不透明，旧页被完全覆盖，不可能再"透明"
+    vc.view.backgroundColor = [UIColor colorWithPatternImage:TBPagePatternImage()];
     if ([vc isKindOfClass:[UITableViewController class]]) {
-        UITableViewController *t = (UITableViewController *)vc;
-        t.tableView.backgroundView = bg;
-        t.tableView.backgroundColor = [UIColor clearColor];
-    } else {
-        vc.view.backgroundColor = [UIColor clearColor];
-        [vc.view insertSubview:bg atIndex:0];
+        ((UITableViewController *)vc).tableView.backgroundColor = [UIColor clearColor];
     }
 }
 

@@ -44,7 +44,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
            @{@"t": @"设置页图标", @"k": TBKeyApplySettings, @"v": @YES},
            @{@"t": @"分享面板", @"k": TBKeyApplyShare, @"v": @YES} ],
         @[ @{@"t": @"导入主题…", @"act": @"import"},
-           @{@"t": @"导入「文件」里的 zip", @"act": @"importDocs"},
            @{@"t": @"在文件管理器中打开主题目录", @"act": @"open"},
            @{@"t": @"重新扫描主题", @"act": @"rescan"},
            @{@"t": @"清除当前主题", @"act": @"clear"} ],
@@ -60,7 +59,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         @"重启桌面": @"arrow.clockwise.circle",
         @"启用引擎": @"power", @"程序坞": @"dock.rectangle", @"文件夹预览": @"folder",
         @"App 切换器": @"rectangle.stack", @"设置页图标": @"gearshape", @"分享面板": @"square.and.arrow.up",
-        @"导入主题…": @"square.and.arrow.down", @"导入「文件」里的 zip": @"folder", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
+        @"导入主题…": @"square.and.arrow.down", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
         @"重新扫描主题": @"arrow.triangle.2.circlepath", @"清除当前主题": @"trash",
         @"跟随系统深色模式": @"circle.lefthalf.filled", @"写日志": @"doc.text", @"安全模式（只记录，不换图）": @"exclamationmark.shield",
         @"应用后清图标缓存（会注销，建议关）": @"arrow.clockwise",
@@ -192,8 +191,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         if (!picker) { [self alert:@"打不开" msg:@"系统没有可用的文件夹选择器"]; return; }
         picker.delegate = self;
         [self presentViewController:picker animated:YES completion:nil];
-    } else if ([act isEqualToString:@"importDocs"]) {
-        [self importFromDocuments];
     } else if ([act isEqualToString:@"open"]) {
         [self openThemeFolder];
     } else if ([act isEqualToString:@"rescan"]) {
@@ -262,29 +259,6 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
     if (![TBEngineInstaller respring]) {
         [self alert:@"重启失败" msg:@"找不到 sbreload / killall，请手动重启桌面"];
     }
-}
-
-- (void)importFromDocuments {
-    NSArray *zips = [TBThemeScanner zipsInDocuments];
-    if (zips.count == 0) {
-        [self alert:@"文档目录里没有 zip" msg:@"打开「文件」App → 我的 iPhone → ThemeBoard，把 zip 拖进去，再回来点这里"];
-        return;
-    }
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"选择要导入的 zip"
-                                                               message:nil
-                                                        preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSString *z in zips) {
-        [ac addAction:[UIAlertAction actionWithTitle:z style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            NSError *err = nil;
-            NSString *dst = [TBThemeScanner importZipInDocuments:z error:&err];
-            if (dst) [self alert:@"导入完成" msg:dst];
-            else [self alert:@"导入失败" msg:err.localizedDescription ?: @"未知错误"];
-        }]];
-    }
-    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    ac.popoverPresentationController.sourceView = self.view;
-    ac.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
-    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)openThemeFolder {
