@@ -22,6 +22,8 @@ typedef struct {
 #pragma mark - 状态
 
 static NSString *gLogPath;
+static BOOL gIsPrimary = NO;      // 只有 SpringBoard 类进程写日志文件，避免多进程互相咬行
+static dispatch_queue_t gLogQueue;
 static NSMutableDictionary<NSString *, NSString *> *gIndex;
 static NSString *gIndexTheme;
 static NSMutableSet<NSValue *> *gCaches;
@@ -821,6 +823,7 @@ static void TBMain(void) {
     // 与图标无关的进程：静默退出，避免刷日志
     if (!hasCache && !hasActivity && !hasISIcon) return;
 
+    gIsPrimary = hasCache;      // 只有带图标缓存的进程（SpringBoard）负责写日志
     gLock = [[NSLock alloc] init];
     gImageCache = [[NSCache alloc] init];
     gImageCache.countLimit = 600;
