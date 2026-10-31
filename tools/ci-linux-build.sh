@@ -10,7 +10,17 @@ mkdir -p "$THEOS/toolchain/linux" "$THEOS/sdks" "$OUT"
 if [ ! -f "$THEOS/toolchain/linux/.ok" ]; then
   URL=https://github.com/sbingner/llvm-project/releases/download/v10.0.0-2/linux-ios-arm64e-clang-toolchain.tar.lzma
   curl -L -m 900 -o /tmp/tc.tar.lzma "$URL"
-  tar -x --lzma -f /tmp/tc.tar.lzma -C "$THEOS/toolchain/linux" || tar -xJf /tmp/tc.tar.lzma -C "$THEOS/toolchain/linux"
+  ls -l /tmp/tc.tar.lzma
+  echo "== 解压 =="
+  cd "$THEOS/toolchain/linux"
+  if ! tar -xJf /tmp/tc.tar.lzma 2>/tmp/tar.err; then
+    echo "tar -xJf 失败，尝试 xz 管道："
+    cat /tmp/tar.err | head -5
+    xz -dc /tmp/tc.tar.lzma | tar -x 2>/tmp/tar2.err || cat /tmp/tar2.err | head -5
+  fi
+  echo "== 解压后目录（前 30 项）=="
+  find "$THEOS/toolchain/linux" -maxdepth 4 | head -30
+  cd "$ROOT"
   touch "$THEOS/toolchain/linux/.ok"
 fi
 
