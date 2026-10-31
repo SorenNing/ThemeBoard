@@ -669,7 +669,12 @@ static void TBInstall(void) {
     Class cache = NSClassFromString(@"SBHIconImageCache");
     Class icon  = NSClassFromString(@"SBIcon");
     Class leaf  = NSClassFromString(@"SBLeafIcon");
-    TBLog(@"类: cache=%@ icon=%@ leaf=%@", cache ? @"有" : @"无", icon ? @"有" : @"无", leaf ? @"有" : @"无");
+    if (gIsPrimary) {
+        TBLog(@"类状态: SBHIconImageCache=%@ SBIcon=%@ UIActivity=%@ ISIcon=%@",
+              cache ? @"有" : @"无", icon ? @"有" : @"无",
+              NSClassFromString(@"UIActivity") ? @"有" : @"无",
+              NSClassFromString(@"ISIcon") ? @"有" : @"无");
+    }
 
     // 只替换主题里确实存在的同名资源，其它一概放行
     o_imageNamed = (ImgNameFn)TBHookClass([UIImage class], @"imageNamed:",
@@ -839,8 +844,9 @@ static void TBTouchMarker(const char *tag) {
         time_t t = time(NULL);
         struct tm tmv;
         localtime_r(&t, &tmv);
-        fprintf(f, "%02d:%02d:%02d pid=%d %s\n",
-                tmv.tm_hour, tmv.tm_min, tmv.tm_sec, getpid(), tag);
+        fprintf(f, "%02d:%02d:%02d pid=%d %s %s\n",
+                tmv.tm_hour, tmv.tm_min, tmv.tm_sec, getpid(), tag,
+                [[[NSProcessInfo processInfo] processName] UTF8String] ?: "?");
         fclose(f);
     }
 }
@@ -858,7 +864,11 @@ static void TBMain(void) {
     // 一旦提前退出，引擎在 SpringBoard 里就永远装不上 hook。
     // 刷屏问题改由「只有 SpringBoard 写日志文件 + 串行队列」控制。
 
-    gIsPrimary = hasCache;      // 只有带图标缓存的进程（SpringBoard）负责写日志
+    // 用【进程名】判断，而不是 hasCache —— 构造器阶段 SBHIconImageCache 可能还没加载，
+    // 用类判断会导致 SpringBoard 自己被当成"非主进程"，于是什么都不写。
+    NSString *pname = [[NSProcessInfo processInfo] processName] ?: @"";
+    gIsPrimary = [pname isEqualToString:@"SpringBoard"] ||
+                 [pname rangeOfString:@"iconservicesagent"].location != NSNotFound;
     gLock = [[NSLock alloc] init];
     gImageCache = [[NSCache alloc] init];
     gImageCache.countLimit = 600;
