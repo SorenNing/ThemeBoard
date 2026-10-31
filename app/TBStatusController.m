@@ -11,6 +11,28 @@
 @property (nonatomic, strong) NSString *engineDetail;
 @end
 
+/// 容错读取：文件里只要有一个坏字节，UTF-8 整体解码就会返回 nil。
+/// 先尝试 UTF-8，失败则用 Latin-1（永不失败），并且只读末尾 256KB。
+static NSString *TBReadLogLossy(NSString *path) {
+    NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (!fh) return nil;
+    unsigned long long size = 0;
+    @try {
+        size = [fh seekToEndOfFile];
+        unsigned long long tailLen = size > 256 * 1024 ? 256 * 1024 : size;
+        [fh seekToFileOffset:size - tailLen];
+        NSData *data = [fh readDataToEndOfFile];
+        [fh closeFile];
+        if (!data.length) return nil;
+        NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (!s) s = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+        if (!s) s = [[NSString alloc] initWithData:data encoding:NSASCIIStringEncoding];
+        return s;
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+
 @implementation TBStatusController
 
 - (void)viewDidLoad {
@@ -65,7 +87,7 @@
     }
 
     if (path) {
-        NSString *log = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+        NSString *log = TBReadLogLossy(path);
         if (log.length == 0) {
             // 引擎可能写在了另一个映射路径；把能找到的所有候选都试一遍
             for (NSString *alt in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
@@ -157,7 +179,7 @@
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.11.6", @"number"]];
+                          @[@"版本", @"0.11.7", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];
