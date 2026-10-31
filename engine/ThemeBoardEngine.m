@@ -799,6 +799,36 @@ static id tb_clockIconImage(id self, SEL _cmd, TBClockInfo info, BOOL mask) {
     return o_clockIconImage ? o_clockIconImage(self, _cmd, info, mask) : nil;
 }
 
+#pragma mark - 设置页图标（PSSpecifier，17.2 头文件确认）
+
+// - (void)setupIconImageWithBundle:(id)bundle;
+// - (void)setupIconImageWithPath:(id)path;
+// 设置页每个 App 行的图标由这里生成，之前的 UIImage/ISIcon hook 都不会被调用。
+typedef void (*SetupIconFn)(id, SEL, id);
+static SetupIconFn o_setupIconBundle, o_setupIconPath;
+
+static void tb_setupIconWithBundle(id self, SEL _cmd, id bundle) {
+    if (o_setupIconBundle) o_setupIconBundle(self, _cmd, bundle);
+    if (!TBEnabled() || TBSafeMode()) return;
+    @try {
+        NSString *bid = nil;
+        for (NSString *k in @[@"identifier", @"bundleIdentifier"]) {
+            if ([self respondsToSelector:NSSelectorFromString(k)]) {
+                id v = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(k));
+                if ([v isKindOfClass:[NSString class]] && [(NSString *)v containsString:@"."]) { bid = v; break; }
+            }
+        }
+        if (!bid.length) return;
+        UIImage *img = TBImageForBundle(bid);
+        if (!img) { TBLog(@"miss(设置页) %@", bid); return; }
+        SEL setIcon = NSSelectorFromString(@"setIconImage:");
+        if ([self respondsToSelector:setIcon]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(self, setIcon, img);
+            TBLog(@"serve(设置页) %@", bid);
+        }
+    } @catch (NSException *e) { }
+}
+
 #pragma mark - 安装
 
 static BOOL gDoneImageHooks = NO;      // UIImage / NSBundle 那组
@@ -806,6 +836,7 @@ static BOOL gDoneISIcon = NO;
 static BOOL gDoneActivity = NO;
 static BOOL gDoneCache = NO;
 static BOOL gDoneClock = NO;
+static BOOL gDoneSpecifier = NO;
 
 static void TBInstall(void) {
     Class cache = NSClassFromString(@"SBHIconImageCache");
@@ -824,7 +855,7 @@ static void TBInstall(void) {
                                               (IMP)tb_imageNamed, "UIImage.imageNamed");
         o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
                                                  (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
-        o_pathForRes = (BundlePathFn)TBHookClass([NSBundle class], @"pathForResource:ofType:",
+        o_pathForRes = (BundlePathFn)TBHook([NSBundle class], @"pathForResource:ofType:",
                                                  (IMP)tb_pathForRes, "NSBundle.pathForResource");
         o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
                                                        (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
@@ -845,6 +876,13 @@ static void TBInstall(void) {
         gDoneClock = YES;
         o_clockIconImage = (ClockIconImageFn)TBHookClass(clockView, @"iconImageWithImageInfo:includingMask:",
                                                          (IMP)tb_clockIconImage, "桌面时钟图标");
+    }
+
+    Class spec = NSClassFromString(@"PSSpecifier");
+    if (spec && !gDoneSpecifier) {
+        gDoneSpecifier = YES;
+        o_setupIconBundle = (SetupIconFn)TBHook(spec, @"setupIconImageWithBundle:",
+                                                (IMP)tb_setupIconWithBundle, "PSSpecifier设置页图标");
     }
 
     Class activity = NSClassFromString(@"UIActivity");
