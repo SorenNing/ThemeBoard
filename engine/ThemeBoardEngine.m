@@ -62,6 +62,46 @@ static const char *TBLogFilePath(void) {
     return NULL;
 }
 
+/// 探针：用于排查"某个界面到底走哪条取图接口"。
+/// 与 TBLog 不同，它在所有进程里都写，且按进程名分文件，避免互相覆盖。
+static void TBProbe(NSString *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+
+    NSString *name = [[NSProcessInfo processInfo] processName] ?: @"unknown";
+    NSString *dir = @"/var/mobile/Library/ThemeBoard";
+    NSString *path = [dir stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"probe-%@.log", name]];
+    FILE *f = fopen(path.UTF8String, "a+");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    if (size < 200 * 80) {          // 每进程最多约 200 行
+        NSDateFormatter *df = [[NSDateFormatter alloc] init];
+        df.dateFormat = @"HH:mm:ss";
+        fprintf(f, "%s %s\n", [[df stringFromDate:[NSDate date]] UTF8String], body.UTF8String);
+    }
+    fclose(f);
+}
+
+/// 日志超过 512KB 时截断，只保留后半，避免无限增长
+static void TBTrimLog(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 512 * 1024) { fclose(f); return; }
+    long keep = 256 * 1024;
+    fseek(f, sz - keep, SEEK_SET);
+    NSMutableData *d = [NSMutableData data];
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) [d appendBytes:buf length:n];
+    fclose(f);
+    [d writeToFile:@(path) atomically:YES];
+}
+
 static void TBLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
@@ -69,10 +109,14 @@ static void TBLog(NSString *fmt, ...) {
     NSString *msg = [NSString stringWithFormat:@"[%@] %@", TBProcName(), body];
     NSLog(@"[ThemeBoard] %@", msg);
 
-    if (!gIsPrimary) return;                 // 只让 SpringBoard 类进程写文件
+    // 所有进程都写，但每进程限量 60 行（用于观察 Preferences / iconservicesagent 等进程的行为）
+    static int sPerProcLines = 0;
+    if (sPerProcLines >= 60) return;
+    sPerProcLines++;
     const char *lp = TBLogFilePath();
     if (!lp) return;
     if (!gLogQueue) gLogQueue = dispatch_queue_create("themeboard.log", DISPATCH_QUEUE_SERIAL);
+    TBTrimLog(lp);
 
     NSDateFormatter *df = [[NSDateFormatter alloc] init];
     df.dateFormat = @"HH:mm:ss";
@@ -568,6 +612,7 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
     @try {
+        TBProbe(@"ISIcon CGImageForImageDescriptor %@", TBBIDFromISIcon(self));
         if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe ISIcon %@", TBBIDFromISIcon(self)); }
         UIImage *img = TBImageFromISIcon(self, descriptor);
         if (img && img.CGImage) {
@@ -664,6 +709,7 @@ static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
     }
     UIImage *img = TBResourceImage(name);
     if (img) { gServe++; TBLog(@"serve 资源 %@", name); return img; }
+    TBProbe(@"imageNamed 未命中 %@", name);
     return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
 }
 
@@ -689,6 +735,7 @@ static UIImage *tb_imageWithFile(id self, SEL _cmd, NSString *path) {
     }
     UIImage *img = TBResourceImage(path);
     if (img) { gServe++; TBLog(@"serve 资源文件 %@", path.lastPathComponent); return img; }
+    TBProbe(@"imageWithContentsOfFile 未命中 %@", path.lastPathComponent);
     return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
 }
 
