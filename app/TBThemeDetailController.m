@@ -73,12 +73,50 @@ static NSString *const kGridID = @"grid";
     self.applyButton.alpha = active ? 0.55 : 1.0;
     NSUInteger miss = self.installed > self.covered ? self.installed - self.covered : 0;
     self.navigationItem.rightBarButtonItems = @[
+        [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(exportTapped)],
         [[UIBarButtonItem alloc] initWithTitle:(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖")
                                          style:UIBarButtonItemStylePlain
                                         target:self action:@selector(missingTapped)],
         [[UIBarButtonItem alloc] initWithTitle:@"应用" style:UIBarButtonItemStyleDone
                                         target:self action:@selector(applyTapped)],
     ];
+}
+
+#pragma mark - 导出已覆盖图标
+
+- (void)exportTapped {
+    NSArray<NSDictionary *> *apps = [TBAppInfo installedApps];
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *root = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"Exports/%@", self.theme.name]];
+    NSString *iconsDir = [root stringByAppendingPathComponent:@"IconBundles"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm removeItemAtPath:root error:nil];
+    [fm createDirectoryAtPath:iconsDir withIntermediateDirectories:YES attributes:nil error:nil];
+
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    NSUInteger copied = 0;
+    for (NSDictionary *a in apps) {
+        NSString *bid = a[@"bid"];
+        NSString *src = [self.theme imagePathForBundleID:bid];
+        if (src.length == 0) {
+            [missing addObject:[NSString stringWithFormat:@"%@\t%@", bid, a[@"name"] ?: @""]];
+            continue;
+        }
+        NSString *dst = [iconsDir stringByAppendingPathComponent:src.lastPathComponent];
+        [fm removeItemAtPath:dst error:nil];
+        if ([fm copyItemAtPath:src toPath:dst error:nil]) copied++;
+    }
+    NSString *missingPath = [root stringByAppendingPathComponent:@"缺失清单.txt"];
+    [[missing componentsJoinedByString:@"\n"] writeToFile:missingPath atomically:YES
+                                                  encoding:NSUTF8StringEncoding error:nil];
+
+    NSString *msg = [NSString stringWithFormat:@"已导出 %lu 个图标，缺失 %lu 个（清单在同目录）\n\n%@",
+                     (unsigned long)copied, (unsigned long)missing.count, root];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"导出完成" message:msg
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)missingTapped {
