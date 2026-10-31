@@ -736,6 +736,11 @@ static NSString *tb_pathForResDir(id self, SEL _cmd, NSString *name, NSString *e
 
 #pragma mark - 安装
 
+static BOOL gDoneImageHooks = NO;      // UIImage / NSBundle 那组
+static BOOL gDoneISIcon = NO;
+static BOOL gDoneActivity = NO;
+static BOOL gDoneCache = NO;
+
 static void TBInstall(void) {
     Class cache = NSClassFromString(@"SBHIconImageCache");
     Class icon  = NSClassFromString(@"SBIcon");
@@ -748,32 +753,36 @@ static void TBInstall(void) {
     }
 
     // 只替换主题里确实存在的同名资源，其它一概放行
-    o_imageNamed = (ImgNameFn)TBHookClass([UIImage class], @"imageNamed:",
-                                          (IMP)tb_imageNamed, "UIImage.imageNamed");
-    o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
-                                             (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
-
-    // SpringBoard 自带的表盘/指针等资源：重定向到主题里的同名文件
-    o_pathForRes = (BundlePathFn)TBHookClass([NSBundle class], @"pathForResource:ofType:",
-                                             (IMP)tb_pathForRes, "NSBundle.pathForResource");
-    o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
-                                                   (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
+    if (!gDoneImageHooks) {
+        o_imageNamed = (ImgNameFn)TBHookClass([UIImage class], @"imageNamed:",
+                                              (IMP)tb_imageNamed, "UIImage.imageNamed");
+        o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
+                                                 (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
+        o_pathForRes = (BundlePathFn)TBHookClass([NSBundle class], @"pathForResource:ofType:",
+                                                 (IMP)tb_pathForRes, "NSBundle.pathForResource");
+        o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
+                                                       (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
+        gDoneImageHooks = (o_imageNamed != NULL);
+    }
 
     Class isicon = NSClassFromString(@"ISIcon");
-    if (isicon) {
+    if (isicon && !gDoneISIcon) {
         o_isiconCG  = (ISIconCGFn)TBHook(isicon, @"CGImageForImageDescriptor:", (IMP)tb_isicon_cg, "ISIcon取图");
         o_isiconCG2 = (ISIconCGFn)TBHook(isicon, @"CGImageForDescriptor:", (IMP)tb_isicon_cg2, "ISIcon取图2");
         o_isiconImg  = (ISIconImgFn)TBHook(isicon, @"imageForImageDescriptor:", (IMP)tb_isicon_image, "ISIcon图像");
         o_isiconImg2 = (ISIconImgFn)TBHook(isicon, @"imageForDescriptor:", (IMP)tb_isicon_image2, "ISIcon图像2");
+        gDoneISIcon = YES;
     }
 
     Class activity = NSClassFromString(@"UIActivity");
-    if (activity) {
+    if (activity && !gDoneActivity) {
         o_activityIcon = (UIActivityIconFn)TBHookClass(activity,
             @"_activityImageForApplicationBundleIdentifier:", (IMP)tb_activityImageForBID, "UIActivity图标");
+        gDoneActivity = YES;
     }
 
-    if (cache) {
+    if (cache && !gDoneCache) {
+        gDoneCache = YES;
         o_imageForIcon        = (FnIcon)TBHook(cache, @"imageForIcon:", (IMP)tb_imageForIcon, "imageForIcon");
         o_imageForIconOpt     = (FnIconOpt)TBHook(cache, @"imageForIcon:options:", (IMP)tb_imageForIconOpt, "imageForIcon:options");
         o_cachedForIcon       = (FnIcon)TBHook(cache, @"cachedImageForIcon:", (IMP)tb_cachedForIcon, "cachedImageForIcon");
@@ -1020,6 +1029,15 @@ static void TBMain(void) {
     }
 
     // 心跳只在负责图标缓存的进程（SpringBoard）里跑，避免多进程反复改日志时间戳
+    // 延迟重试：IconServices / ShareSheet 等框架是懒加载的，
+    // 构造器执行时可能还没载入，导致对应 hook 一辈子装不上。
+    for (int i = 1; i <= 10; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            TBInstall();
+        });
+    }
+
     if (!hasCache) return;
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         while (1) {
