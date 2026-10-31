@@ -70,32 +70,58 @@ static NSString *TBReadLogLossy(NSString *path) {
 }
 
 - (void)refresh {
-    NSString *path = [self logPath];
-    NSDictionary *attrs = path ? [[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] : nil;
+    NSMutableString *out = [NSMutableString string];
+
+    // ---- 1. 存活标记：引擎构造器第一件事写它（C 文件 API，最可靠）----
+    NSString *markerText = nil;
+    for (NSString *mk in @[@"/var/mobile/Library/ThemeBoard/alive.txt",
+                           @"/var/jb/var/mobile/Library/ThemeBoard/alive.txt"]) {
+        NSString *t = [NSString stringWithContentsOfFile:mk encoding:NSUTF8StringEncoding error:NULL];
+        if (t.length) { markerText = t; break; }
+    }
+    if (markerText.length) {
+        NSArray *ml = [markerText componentsSeparatedByString:@"\n"];
+        NSUInteger keep = ml.count > 8 ? ml.count - 8 : 0;
+        [out appendFormat:@"【存活标记】引擎已被加载\n%@\n\n",
+            [[ml subarrayWithRange:NSMakeRange(keep, ml.count - keep)] componentsJoinedByString:@"\n"]];
+    } else {
+        [out appendString:@"【存活标记】没有 —— 引擎 dylib 未被加载\n\n"];
+    }
+
+    // ---- 2. 引擎日志 ----
+    NSString *path = @"/var/mobile/Library/ThemeBoard/engine.log";
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL];
+    if (!attrs) {
+        NSString *alt = @"/var/jb/var/mobile/Library/ThemeBoard/engine.log";
+        NSDictionary *a2 = [[NSFileManager defaultManager] attributesOfItemAtPath:alt error:NULL];
+        if (a2) { path = alt; attrs = a2; }
+    }
     NSDate *mtime = attrs[NSFileModificationDate];
     NSTimeInterval age = mtime ? -[mtime timeIntervalSinceNow] : -1;
 
-    if (!path) {
+    if (!attrs) {
         self.engineState = @"未运行";
-        self.engineDetail = @"找不到 engine.log，引擎没有注入";
+        self.engineDetail = @"找不到 engine.log";
     } else if (age >= 0 && age < 180) {
         self.engineState = @"运行中";
         self.engineDetail = [NSString stringWithFormat:@"%d 秒前的心跳", (int)age];
     } else {
         self.engineState = @"已停止";
-        self.engineDetail = [NSString stringWithFormat:@"%d 分钟没有更新", (int)(age / 60)];
+        self.engineDetail = age < 0 ? @"时间异常"
+            : [NSString stringWithFormat:@"%d 分钟没有更新", (int)(age / 60)];
     }
 
-    if (path) {
-        NSString *log = TBReadLogLossy(path);
-        if (log.length == 0) {
-            // 引擎可能写在了另一个映射路径；把能找到的所有候选都试一遍
-            for (NSString *alt in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
-                                    @"/var/mobile/Library/ThemeBoard/engine.log"]) {
-                NSString *l2 = [NSString stringWithContentsOfFile:alt encoding:NSUTF8StringEncoding error:NULL];
-                if (l2.length) { log = l2; path = alt; break; }
-            }
+    NSString *log = TBReadLogLossy(path);
+    if (!log.length) {
+        for (NSString *a in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
+                              @"/var/mobile/Library/ThemeBoard/engine.log"]) {
+            NSString *l2 = TBReadLogLossy(a);
+            if (l2.length) { log = l2; break; }
         }
+    }
+    if (!log.length) {
+        [out appendString:@"【引擎日志】（没有日志）"];
+    } else {
         NSArray *lines = [log componentsSeparatedByString:@"\n"];
         NSUInteger start = lines.count > 40 ? lines.count - 40 : 0;
         NSMutableArray *tail = [NSMutableArray array];
@@ -103,11 +129,9 @@ static NSString *TBReadLogLossy(NSString *path) {
             if ([lines[i] length]) [tail addObject:lines[i]];
         }
         NSString *body = [tail componentsJoinedByString:@"\n"];
-        if (!body.length) body = @"（日志存在但为空）";
-        self.logText = [self.logText stringByAppendingString:body];
-    } else {
-        self.logText = @"（没有日志）";
+        [out appendFormat:@"【引擎日志】\n%@", body.length ? body : @"（日志存在但为空）"];
     }
+    self.logText = out;
     [self.table reloadData];
 }
 
@@ -180,7 +204,7 @@ static NSString *TBReadLogLossy(NSString *path) {
     } else if (ip.section == 1) {
         NSArray *rows = @[@[@"系统", [[UIDevice currentDevice] systemVersion], @"iphone"],
                           @[@"机型", [[UIDevice currentDevice] model], @"iphone.gen3"],
-                          @[@"版本", @"0.11.9", @"number"]];
+                          @[@"版本", @"0.12.0", @"number"]];
         cell.imageView.image = [UIImage systemImageNamed:rows[ip.row][2]];
         cell.imageView.tintColor = [UIColor secondaryLabelColor];
         cell.textLabel.text = rows[ip.row][0];

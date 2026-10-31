@@ -853,8 +853,10 @@ static void TBMain(void) {
     hasCache = NSClassFromString(@"SBHIconImageCache") != nil;
     BOOL hasActivity = NSClassFromString(@"UIActivity") != nil;
     BOOL hasISIcon = NSClassFromString(@"ISIcon") != nil;
-    // 与图标无关的进程：静默退出，避免刷日志
-    if (!hasCache && !hasActivity && !hasISIcon) return;
+    // 注意：这里【不能】提前 return。构造器执行得极早，
+    // SpringBoardHome 可能尚未加载，NSClassFromString 会返回 nil，
+    // 一旦提前退出，引擎在 SpringBoard 里就永远装不上 hook。
+    // 刷屏问题改由「只有 SpringBoard 写日志文件 + 串行队列」控制。
 
     gIsPrimary = hasCache;      // 只有带图标缓存的进程（SpringBoard）负责写日志
     gLock = [[NSLock alloc] init];
