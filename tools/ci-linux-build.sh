@@ -26,8 +26,17 @@ fi
 
 # 注意：这些是符号链接，不能用 -type f
 TCBIN=$(find "$THEOS/toolchain" -maxdepth 4 -name 'bin' -type d 2>/dev/null | head -1)
-CLANG_FOUND=$(find "$THEOS/toolchain" -name 'clang' 2>/dev/null | head -1)
-LD_FOUND=$(find "$THEOS/toolchain" \( -name 'ld64' -o -name 'ld64.lld' \) 2>/dev/null | head -1)
+# 只在 bin 目录里找（find 会先命中 include/clang 这个目录）
+CLANG_FOUND=""
+LD_FOUND=""
+if [ -d "$TCBIN" ]; then
+  for c in "$TCBIN/clang" "$TCBIN/clang++"; do
+    [ -x "$c" ] && CLANG_FOUND="$c" && break
+  done
+  for c in "$TCBIN/ld64" "$TCBIN/ld64.lld" "$TCBIN/ld"; do
+    [ -x "$c" ] && LD_FOUND="$c" && break
+  done
+fi
 echo "TCBIN: $TCBIN"
 ls -l "$TCBIN" 2>/dev/null | head -20
 echo "clang: $CLANG_FOUND"
