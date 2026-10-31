@@ -24,8 +24,12 @@ if [ ! -f "$THEOS/toolchain/linux/.ok" ]; then
   touch "$THEOS/toolchain/linux/.ok"
 fi
 
-CLANG_FOUND=$(find "$THEOS/toolchain" -type f -name 'clang' 2>/dev/null | head -1)
-LD_FOUND=$(find "$THEOS/toolchain" -type f \( -name 'ld64' -o -name 'ld64.lld' \) 2>/dev/null | head -1)
+# 注意：这些是符号链接，不能用 -type f
+TCBIN=$(find "$THEOS/toolchain" -maxdepth 4 -name 'bin' -type d 2>/dev/null | head -1)
+CLANG_FOUND=$(find "$THEOS/toolchain" -name 'clang' 2>/dev/null | head -1)
+LD_FOUND=$(find "$THEOS/toolchain" \( -name 'ld64' -o -name 'ld64.lld' \) 2>/dev/null | head -1)
+echo "TCBIN: $TCBIN"
+ls -l "$TCBIN" 2>/dev/null | head -20
 echo "clang: $CLANG_FOUND"
 echo "ld   : $LD_FOUND"
 
