@@ -1064,6 +1064,17 @@ static void TBInstall(void) {
         }
     }
 
+    // IFImage（IconServices 通道）
+    Class ifImage = NSClassFromString(@"IFImage");
+    if (ifImage) {
+        if (TBHasMethod(ifImage, @"imageForDescriptor:")) {
+            o_ifImgDescriptor = (IFImgFn)TBHook(ifImage, @"imageForDescriptor:", (IMP)tb_ifImgDescriptor, "IFImage.desc");
+        }
+        if (TBHasMethod(ifImage, @"imageForSize:scale:")) {
+            o_ifImgSize = (IFSizeFn)TBHook(ifImage, @"imageForSize:scale:", (IMP)tb_ifImgSize, "IFImage.size");
+        }
+    }
+
     // generateIconImageWithInfo: 仅在 iOS 17.x 上启用（唯一已验证版本）
     if (icon && !gDoneGen) {
         gDoneGen = YES;
