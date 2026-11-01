@@ -587,37 +587,34 @@ static SetImgFn o_setImageOnIconView;
 static ResetImgFn o_resetImageOnIconView;
 
 static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
-    if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, image);
-    if (!TBApplyIconForDesktop()) return;
-    @try {
-        id icon = nil;
-        if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
-            icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
-        }
-        NSString *bid = TBBIDFromIcon(icon);
-        if (bid) {
-            UIImage *img = TBImageForBundle(bid);
-            if (img) {
-                ((void (*)(id, SEL, id))objc_msgSend)(self, NSSelectorFromString(@"setImage:"), img);
-                gServe++; TBLog(@"serve SBIconImageView.setImage %@", bid);
+    // 先用主题图替换传入 image，再一次性调用原实现（避免递归 setImage:）
+    id finalImage = image;
+    BOOL replaced = NO;
+    if (TBApplyIconForDesktop()) {
+        @try {
+            id icon = nil;
+            if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
+                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
             }
-        }
-    } @catch (NSException *e) { }
+            NSString *bid = TBBIDFromIcon(icon);
+            if (bid) {
+                UIImage *img = TBImageForBundle(bid);
+                if (img) { finalImage = img; replaced = YES; }
+            }
+        } @catch (NSException *e) { }
+    }
+    if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, finalImage);
+    if (replaced) { gServe++; TBLog(@"serve SBIconImageView.setImage %@", TBBIDFromIcon([self valueForKey:@"icon"])); }
 }
 
 static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
+    // resetImageWithAppIcon: 通常与 setImage: 配合，这里只做观察，
+    // 不重复调用 setImage: 避免递归。
     if (o_resetImageOnIconView) o_resetImageOnIconView(self, _cmd, icon);
     NSString *bid = TBBIDFromIcon(icon);
     if (bid && TBApplyIconForDesktop()) {
         UIImage *img = TBImageForBundle(bid);
-        if (img) {
-            @try {
-                if ([self respondsToSelector:NSSelectorFromString(@"setImage:")]) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(self, NSSelectorFromString(@"setImage:"), img);
-                    gServe++; TBLog(@"serve SBIconImageView.resetImage %@", bid);
-                }
-            } @catch (NSException *e) { }
-        }
+        if (img) { gServe++; TBLog(@"observe resetImageWithAppIcon %@", bid); }
     }
 }
 
@@ -672,6 +669,7 @@ typedef id (*IconImageViewFn)(id, SEL);
 static IconImageViewFn o_iconImageView, o_crossfadeImageView;
 
 static id tb_iconImageView(id self, SEL _cmd) {
+    // 观察路径：只记录，不直接改图（setImage: 由 SBIconImageView hook 统一处理，避免递归）
     id v = o_iconImageView ? o_iconImageView(self, _cmd) : nil;
     if (v && TBApplyIconForDesktop()) {
         @try {
@@ -680,13 +678,7 @@ static id tb_iconImageView(id self, SEL _cmd) {
                 icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
             }
             NSString *bid = TBBIDFromIcon(icon);
-            if (bid) {
-                UIImage *img = TBImageForBundle(bid);
-                if (img && [v respondsToSelector:NSSelectorFromString(@"setImage:")]) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(v, NSSelectorFromString(@"setImage:"), img);
-                    gServe++; TBLog(@"serve SBIconView.iconImageView %@", bid);
-                }
-            }
+            if (bid && TBImageForBundle(bid)) { gServe++; }
         } @catch (NSException *e) { }
     }
     return v;
@@ -701,13 +693,7 @@ static id tb_crossfadeImageView(id self, SEL _cmd) {
                 icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
             }
             NSString *bid = TBBIDFromIcon(icon);
-            if (bid) {
-                UIImage *img = TBImageForBundle(bid);
-                if (img && [v respondsToSelector:NSSelectorFromString(@"setImage:")]) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(v, NSSelectorFromString(@"setImage:"), img);
-                    gServe++; TBLog(@"serve crossfadeImageView %@", bid);
-                }
-            }
+            if (bid && TBImageForBundle(bid)) { gServe++; }
         } @catch (NSException *e) { }
     }
     return v;
