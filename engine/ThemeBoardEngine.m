@@ -607,6 +607,51 @@ static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
     }
 }
 
+// ---- SBIconView._iconImageView（SnowBoard/MarkTheme 核心通道：桌面/资源库/Dock/切换器）----
+typedef id (*IconViewFn)(id, SEL);
+static IconViewFn o_iconImageView;
+static IconViewFn o_iconImageViewXfade;
+
+static id tb_iconImageView(id self, SEL _cmd) {
+    id v = o_iconImageView ? o_iconImageView(self, _cmd) : nil;
+    if (TBEnabled() && !TBSafeMode() && v) {
+        @try {
+            id icon = nil;
+            if ([self respondsToSelector:NSSelectorFromString(@"icon")])
+                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
+            NSString *bid = TBBIDFromIcon(icon);
+            if (bid) {
+                UIImage *img = TBImageForBundle(bid);
+                if (img && [v respondsToSelector:@selector(setImage:)]) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setImage:), img);
+                    gServe++; TBLog(@"serve SBIconView._iconImageView %@", bid);
+                }
+            }
+        } @catch (NSException *e) { }
+    }
+    return v;
+}
+
+static id tb_iconImageViewXfade(id self, SEL _cmd) {
+    id v = o_iconImageViewXfade ? o_iconImageViewXfade(self, _cmd) : nil;
+    if (TBEnabled() && !TBSafeMode() && v) {
+        @try {
+            id icon = nil;
+            if ([self respondsToSelector:NSSelectorFromString(@"icon")])
+                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
+            NSString *bid = TBBIDFromIcon(icon);
+            if (bid) {
+                UIImage *img = TBImageForBundle(bid);
+                if (img && [v respondsToSelector:@selector(setImage:)]) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setImage:), img);
+                    gServe++; TBLog(@"serve SBIconImageCrossfadeView.iconImageView %@", bid);
+                }
+            }
+        } @catch (NSException *e) { }
+    }
+    return v;
+}
+
 // ---- IFImage（IconServices 图标服务，快捷指令/资源库共用）----
 typedef id (*IFImgFn)(id, SEL, id);
 typedef id (*IFSizeFn)(id, SEL, CGSize, double);
@@ -1120,6 +1165,17 @@ static void TBInstall(void) {
     // SBIconImageView.resetImageWithAppIcon:（拖拽放置/状态重建通道）
     if (iconImageViewCls && TBHasMethod(iconImageViewCls, @"resetImageWithAppIcon:")) {
         o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "SBIconImageView.reset");
+    }
+
+    // SBIconView._iconImageView（SnowBoard/MarkTheme 核心通道，拖拽放置重建走这里）
+    Class sbIconViewCls = NSClassFromString(@"SBIconView");
+    if (sbIconViewCls && TBHasMethod(sbIconViewCls, @"_iconImageView")) {
+        o_iconImageView = (IconViewFn)TBHook(sbIconViewCls, @"_iconImageView", (IMP)tb_iconImageView, "SBIconView._iconImageView");
+    }
+    // SBIconImageCrossfadeView.iconImageView（桌面动画过渡，MarkTheme 通道）
+    Class sbXfadeCls = NSClassFromString(@"SBIconImageCrossfadeView");
+    if (sbXfadeCls && TBHasMethod(sbXfadeCls, @"iconImageView")) {
+        o_iconImageViewXfade = (IconViewFn)TBHook(sbXfadeCls, @"iconImageView", (IMP)tb_iconImageViewXfade, "SBIconImageCrossfadeView.iconImageView");
     }
 
     // IFImage（IconServices 通道）
