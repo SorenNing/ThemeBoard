@@ -415,6 +415,9 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
     return base;
 }
 
+static BOOL TBIsDynamicBID(NSString *bid);
+static NSString *TBDynamicResourcePath(NSString *bid);
+
 /// 取主题图：锁内只做字典查找，读盘/绘制都在锁外，避免 SpringBoard 被拖死
 static UIImage *TBImageForBundle(NSString *bid) {
     if (!bid.length || !TBEnabled()) return nil;
@@ -424,7 +427,14 @@ static UIImage *TBImageForBundle(NSString *bid) {
     TBLoadIndex();
     NSString *path = gIndex[bid];
     [gLock unlock];
-    if (!path) return nil;
+    if (!path) {
+        // 时钟/日历是动态图标，主题作者通常放在 Bundles/ 下的
+        // ClockIcon*.png / CalendarIcon*.png，而不是 IconBundles/<包名>.png
+        path = TBDynamicResourcePath(bid);
+        if (!path) return nil;
+        TBLogOnce([@"dynsrc|" stringByAppendingString:bid],
+                  @"dynamic 图来自 Bundles: %@ → %@", bid, path.lastPathComponent);
+    }
 
     UIImage *cached = [gImageCache objectForKey:bid];
     if (cached) return cached;
@@ -1219,6 +1229,33 @@ static ISIconImgFn o_isiconImg, o_isiconImg2;
 
 static BOOL TBIsDynamicBID(NSString *bid) {
     return [bid isEqualToString:@"com.apple.mobilecal"] || [bid isEqualToString:@"com.apple.mobiletimer"];
+}
+
+/// 动态图标（时钟/日历）在主题 Bundles/ 里找对应素材：
+/// ClockIcon* / CalendarIcon*，优先 @3x > @2x > 1x
+static NSString *TBDynamicResourcePath(NSString *bid) {
+    if (!bid.length || !TBIsDynamicBID(bid)) return nil;
+    NSString *prefix = [bid isEqualToString:@"com.apple.mobiletimer"] ? @"clockicon" : @"calendaricon";
+    [gLock lock];
+    TBLoadIndex();
+    NSString *theme = TBActiveTheme();
+    NSString *dir = theme.length ? TBThemeDir(theme) : nil;
+    if (dir) TBLoadBundleResources(dir);
+    NSMutableDictionary *res = gBundleRes;
+    [gLock unlock];
+    if (!res.count) return nil;
+
+    NSString *best = nil;
+    NSInteger bestRank = -1;
+    for (NSString *key in res) {
+        if (![key hasPrefix:prefix]) continue;
+        if (![key hasSuffix:@".png"]) continue;
+        NSInteger rank = 1;
+        if ([key rangeOfString:@"@3x"].location != NSNotFound) rank = 3;
+        else if ([key rangeOfString:@"@2x"].location != NSNotFound) rank = 2;
+        if (rank > bestRank) { bestRank = rank; best = res[key]; }
+    }
+    return best;
 }
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
