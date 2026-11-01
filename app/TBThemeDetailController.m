@@ -16,6 +16,7 @@ static NSString *const kGridID = @"grid";
 @property (nonatomic, strong) UISearchController *search;
 @property (nonatomic, strong) UILabel *summaryLabel;
 @property (nonatomic, strong) UIButton *applyButton;
+@property (nonatomic, strong) UIButton *exportButton;
 @property (nonatomic, assign) NSUInteger covered;
 @property (nonatomic, assign) NSUInteger installed;
 @end
@@ -121,6 +122,52 @@ static NSString *const kGridID = @"grid";
 
 - (void)missingTapped {
     [self.navigationController pushViewController:[[TBMissingController alloc] initWithTheme:self.theme] animated:YES];
+}
+
+- (void)exportTapped {
+    // 导出已用的图标：主题里覆盖到的、已安装应用的图标，复制到 Documents/Exports/<主题名>/IconBundles/
+    NSArray<NSDictionary *> *apps = [TBAppInfo installedApps];
+    NSMutableArray<NSString *> *hit = [NSMutableArray array];
+    NSMutableArray<NSString *> *missed = [NSMutableArray array];
+
+    NSString *base = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *dir = [base stringByAppendingPathComponent:
+                     [NSString stringWithFormat:@"Exports/%@/IconBundles", self.theme.name]];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSDictionary *a in apps) {
+        NSString *bid = a[@"bid"];
+        if (!bid.length) continue;
+        NSString *path = [self.theme imagePathForBundleID:bid];
+        if (path && [fm fileExistsAtPath:path]) {
+            NSString *fname = [bid stringByAppendingString:@".png"];
+            NSString *dst = [dir stringByAppendingPathComponent:fname];
+            [fm copyItemAtPath:path toPath:dst error:NULL];
+            [hit addObject:bid];
+        } else {
+            [missed addObject:bid];
+        }
+    }
+
+    // 缺失清单
+    if (missed.count) {
+        NSString *missPath = [dir stringByAppendingPathComponent:@"缺失清单.txt"];
+        NSMutableString *mt = [NSMutableString string];
+        for (NSString *b in missed) [mt appendFormat:@"%@\n", b];
+        [mt writeToFile:missPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    }
+
+    NSString *msg = [NSString stringWithFormat:@"已导出 %lu 个应用图标\n保存位置：\n%@",
+                     (unsigned long)hit.count, dir];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"导出完成"
+                                                                message:msg
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [UIPasteboard generalPasteboard].string = dir;
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:ac animated:YES completion:nil];
 }
 
 - (void)applyTapped {
@@ -229,13 +276,31 @@ static NSString *const kGridID = @"grid";
         [cell.contentView addSubview:btn];
         self.applyButton = btn;
 
+        // 导出按钮（与「应用」并排）
+        UIButton *exp = [UIButton buttonWithType:UIButtonTypeSystem];
+        exp.translatesAutoresizingMaskIntoConstraints = NO;
+        [exp setTitle:@"导出" forState:UIControlStateNormal];
+        exp.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        exp.tintColor = [UIColor whiteColor];
+        exp.backgroundColor = [UIColor colorWithRed:0.3 green:0.5 blue:0.9 alpha:1];
+        exp.layer.cornerRadius = 13;
+        exp.layer.cornerCurve = kCACornerCurveContinuous;
+        [exp addTarget:self action:@selector(exportTapped) forControlEvents:UIControlEventTouchUpInside];
+        [cell.contentView addSubview:exp];
+        self.exportButton = exp;
+
         [NSLayoutConstraint activateConstraints:@[
             [summary.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:58],
             [summary.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:18],
             [summary.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-18],
 
+            [exp.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
+            [exp.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [exp.trailingAnchor constraintEqualToAnchor:btn.leadingAnchor constant:-10],
+            [exp.heightAnchor constraintEqualToConstant:44],
+
             [btn.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
-            [btn.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [btn.leadingAnchor constraintEqualToAnchor:exp.trailingAnchor constant:10],
             [btn.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
             [btn.heightAnchor constraintEqualToConstant:44],
             [btn.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-14],
