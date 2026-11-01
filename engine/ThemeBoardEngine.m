@@ -585,6 +585,28 @@ static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
     if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, image);
 }
 
+// ---- SBIconImageView.resetImageWithAppIcon:（SnowBoard 通道，拖拽放置重建）----
+typedef void (*ResetImgFn)(id, SEL, id);
+static ResetImgFn o_resetImageOnIconView;
+
+static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
+    // 先让系统完成重置（保持层树完整、不递归）
+    if (o_resetImageOnIconView) o_resetImageOnIconView(self, _cmd, icon);
+    // 再用主题图覆盖，保证拖拽/状态重建后仍是主题
+    if (TBEnabled() && !TBSafeMode()) {
+        @try {
+            NSString *bid = TBBIDFromIcon(icon);
+            if (bid) {
+                UIImage *img = TBImageForBundle(bid);
+                if (img && o_setImageOnIconView) {
+                    o_setImageOnIconView(self, NSSelectorFromString(@"setImage:"), img);
+                    gServe++; TBLog(@"serve SBIconImageView.resetImageWithAppIcon %@", bid);
+                }
+            }
+        } @catch (NSException *e) { }
+    }
+}
+
 // ---- IFImage（IconServices 图标服务，快捷指令/资源库共用）----
 typedef id (*IFImgFn)(id, SEL, id);
 typedef id (*IFSizeFn)(id, SEL, CGSize, double);
@@ -1094,6 +1116,10 @@ static void TBInstall(void) {
     Class iconImageViewCls = NSClassFromString(@"SBIconImageView");
     if (iconImageViewCls && TBHasMethod(iconImageViewCls, @"setImage:")) {
         o_setImageOnIconView = (SetImgFn)TBHook(iconImageViewCls, @"setImage:", (IMP)tb_setImageOnIconView, "SBIconImageView");
+    }
+    // SBIconImageView.resetImageWithAppIcon:（拖拽放置/状态重建通道）
+    if (iconImageViewCls && TBHasMethod(iconImageViewCls, @"resetImageWithAppIcon:")) {
+        o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "SBIconImageView.reset");
     }
 
     // IFImage（IconServices 通道）
