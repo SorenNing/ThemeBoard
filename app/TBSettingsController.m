@@ -98,7 +98,7 @@ static UIDocumentPickerViewController *TBNewFolderPicker(void) {
         return @"没有检测到引擎。RootHide 下 App 无法写入注入目录，请在 Sileo 安装「ThemeBoard 引擎」，装完重启一次桌面。";
     }
     if (section == 1) return @"关闭后完全恢复系统原样。";
-    if (section == 2) return @"关掉某一项，那个位置就保持系统原样。";
+    if (section == 2) return @"程序坞 / 文件夹预览 / App 切换器共用系统图标缓存，任一开启即生效；设置页图标与分享面板可单独关闭。";
     if (section == 3) {
         NSMutableString *s = [NSMutableString stringWithString:@"主题目录：\n"];
         for (NSDictionary *d in [TBThemeScanner rootDiagnostics]) {

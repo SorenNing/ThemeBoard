@@ -157,6 +157,15 @@ static BOOL TBSafeMode(void) {
 }
 
 static BOOL TBEnabled(void) { id v = TBPref(kEnabled); return v ? [v boolValue] : YES; }
+/// 分项开关（默认全开）。关掉某一项，对应位置保持系统原样。
+static BOOL TBApplyEnabled(NSString *key) {
+    id v = TBPref(key);
+    return v ? [v boolValue] : YES;
+}
+/// 程序坞 / 文件夹预览 / App 切换器共用系统图标缓存，三开关任一开即允许替换。
+static BOOL TBSpringBoardIconsEnabled(void) {
+    return TBApplyEnabled(@"ApplyDock") || TBApplyEnabled(@"ApplyFolder") || TBApplyEnabled(@"ApplySwitcher");
+}
 static NSString *TBActiveTheme(void) {
     id v = TBPref(kActiveTheme);
     return [v isKindOfClass:[NSString class]] ? v : nil;
@@ -498,50 +507,62 @@ static FnGenSize o_iconImageOfSize;
 
 static id tb_imageForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-    if (img) { gServe++; TBLog(@"serve imageForIcon %@", bid); return img; }
-    gMiss++; TBLog(@"miss %@", bid ?: @"(无bid)");
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
+        if (img) { gServe++; TBLog(@"serve imageForIcon %@", bid); return img; }
+        gMiss++; TBLog(@"miss %@", bid ?: @"(无bid)");
+    }
     return o_imageForIcon ? o_imageForIcon(self, _cmd, icon) : nil;
 }
 
 static id tb_imageForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-    if (img) { gServe++; TBLog(@"serve imageForIcon:options: %@ opt=%llu", bid, opt); return img; }
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
+        if (img) { gServe++; TBLog(@"serve imageForIcon:options: %@ opt=%llu", bid, opt); return img; }
+    }
     return o_imageForIconOpt ? o_imageForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
 static id tb_cachedForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-    if (img) { gServe++; TBLog(@"serve cachedImageForIcon %@", bid); return img; }
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
+        if (img) { gServe++; TBLog(@"serve cachedImageForIcon %@", bid); return img; }
+    }
     return o_cachedForIcon ? o_cachedForIcon(self, _cmd, icon) : nil;
 }
 
 static id tb_realForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-    if (img) { gServe++; TBLog(@"serve realImageForIcon %@", bid); return img; }
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
+        if (img) { gServe++; TBLog(@"serve realImageForIcon %@", bid); return img; }
+    }
     return o_realForIconOpt ? o_realForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
 static id tb_unmaskedForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-    if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon %@", bid); return img; }
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
+        if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon %@", bid); return img; }
+    }
     return o_unmaskedForIcon ? o_unmaskedForIcon(self, _cmd, icon) : nil;
 }
 
 static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
     TBRemember(self);
-    NSString *bid = TBBIDFromIcon(icon);
-    UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-    if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon:options %@", bid); return img; }
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
+        if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon:options %@", bid); return img; }
+    }
     return o_unmaskedForIconOpt ? o_unmaskedForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
@@ -552,9 +573,11 @@ static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
 }
 
 static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
-    NSString *bid = TBBIDFromIcon(self);
-    UIImage *img = TBImageForBundle(bid);
-    if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
+    if (TBSpringBoardIconsEnabled()) {
+        NSString *bid = TBBIDFromIcon(self);
+        UIImage *img = TBImageForBundle(bid);
+        if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
+    }
     return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
 }
 
@@ -571,6 +594,9 @@ static UIActivityIconFn o_activityIcon;
 
 /// ShareSheet.framework/UIActivity：分享面板里每个 App 的图标
 static UIImage *tb_activityImageForBID(id self, SEL _cmd, NSString *bid) {
+    if (!TBApplyEnabled(@"ApplyShare")) {
+        return o_activityIcon ? o_activityIcon(self, _cmd, bid) : nil;
+    }
     if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe UIActivity %@", bid); }
     UIImage *img = TBImageForBundle(bid);
     if (img) { gServe++; TBLog(@"serve UIActivity %@", bid); return img; }
@@ -626,6 +652,9 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 }
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
+    if (!TBApplyEnabled(@"ApplySettings")) {
+        return o_isiconCG ? o_isiconCG(self, _cmd, descriptor) : NULL;
+    }
     @try {
         TBProbe(@"ISIcon CGImageForImageDescriptor %@", TBBIDFromISIcon(self));
         if (gProbeCount < 20) { gProbeCount++; TBLog(@"probe ISIcon %@", TBBIDFromISIcon(self)); }
@@ -642,6 +671,9 @@ static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
 }
 
 static CGImageRef tb_isicon_cg2(id self, SEL _cmd, id descriptor) {
+    if (!TBApplyEnabled(@"ApplySettings")) {
+        return o_isiconCG2 ? o_isiconCG2(self, _cmd, descriptor) : NULL;
+    }
     @try {
         UIImage *img = TBImageFromISIcon(self, descriptor);
         if (img && img.CGImage) {
@@ -664,6 +696,7 @@ static BOOL TBIsDynamicBID(NSString *bid) {
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
     id ret = o_isiconImg ? o_isiconImg(self, _cmd, descriptor) : nil;
+    if (!TBApplyEnabled(@"ApplySettings")) return ret;
 
     NSString *bid = TBBIDFromISIcon(self);
     if (!TBIsDynamicBID(bid)) return ret;
@@ -689,6 +722,7 @@ static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
 
 static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
     id ret = o_isiconImg2 ? o_isiconImg2(self, _cmd, descriptor) : nil;
+    if (!TBApplyEnabled(@"ApplySettings")) return ret;
 
     NSString *bid = TBBIDFromISIcon(self);
     if (!TBIsDynamicBID(bid)) return ret;
@@ -824,7 +858,7 @@ static SetupIconFn o_setupIconBundle, o_setupIconPath;
 
 static void tb_setupIconWithBundle(id self, SEL _cmd, id bundle) {
     if (o_setupIconBundle) o_setupIconBundle(self, _cmd, bundle);
-    if (!TBEnabled() || TBSafeMode()) return;
+    if (!TBEnabled() || TBSafeMode() || !TBApplyEnabled(@"ApplySettings")) return;
     @try {
         NSString *bid = nil;
         for (NSString *k in @[@"identifier", @"bundleIdentifier"]) {
