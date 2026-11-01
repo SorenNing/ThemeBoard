@@ -248,16 +248,16 @@ static NSString *const kGridID = @"grid";
             [summary.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:18],
             [summary.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-18],
 
-            [exp.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
-            [exp.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-            [exp.trailingAnchor constraintEqualToAnchor:btn.leadingAnchor constant:-10],
-            [exp.heightAnchor constraintEqualToConstant:44],
-
             [btn.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
-            [btn.leadingAnchor constraintEqualToAnchor:exp.trailingAnchor constant:10],
-            [btn.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [btn.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [btn.trailingAnchor constraintEqualToAnchor:exp.leadingAnchor constant:-10],
             [btn.heightAnchor constraintEqualToConstant:44],
             [btn.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-14],
+
+            [exp.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
+            [exp.leadingAnchor constraintEqualToAnchor:btn.trailingAnchor constant:10],
+            [exp.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [exp.heightAnchor constraintEqualToConstant:44],
         ]];
         return cell;
     }
