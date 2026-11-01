@@ -20,10 +20,6 @@ typedef struct {
     double ratio;     // 8B
 } TBImageInfo;        // 32B，HFA(4×double)，走 d0-d3
 
-typedef id (*CalGenFn)(id, SEL, TBImageInfo);
-typedef id (*CalUnmaskedFn)(id, SEL, TBImageInfo);
-typedef id (*ProviderIconFn)(id, SEL, TBImageInfo);
-
 #pragma mark - 状态
 
 static NSString *gLogPath;
@@ -63,9 +59,6 @@ static BOOL TBHasMethod(Class cls, NSString *selName) {
     return [cls instancesRespondToSelector:sel] || [cls respondsToSelector:sel];
 }
 
-static BOOL TBApplyIconForDesktop(void);
-static NSString *TBBIDFromISIcon(id icon);
-static BOOL TBUIKitIconEnabled(void);
 static NSString *TBProcName(void) {
     static NSString *name = nil;
     if (!name) name = [[NSProcessInfo processInfo] processName] ?: @"?";
@@ -191,13 +184,6 @@ static BOOL TBEnabled(void) { id v = TBPref(kEnabled); return v ? [v boolValue] 
 static BOOL TBApplyEnabled(NSString *key) {
     id v = TBPref(key);
     return v ? [v boolValue] : YES;
-}
-
-/// 新增通道总开关（0.13.18 新增的高频 hook 默认关闭，避免 SpringBoard 主线程阻塞闪屏）
-static BOOL TBNewChannelsEnabled(void) {
-    id v = TBPref(@"NewChannels");
-    if (v) return [v boolValue];
-    return NO;   // 默认关闭（旧通道不受影响）
 }
 /// 程序坞 / 文件夹预览 / App 切换器共用系统图标缓存，三开关任一开即允许替换。
 static BOOL TBApplyIconForDesktop(void) {
@@ -492,219 +478,6 @@ typedef id (*FnGenSize)(id, SEL, CGSize, double, BOOL, id);
 static FnIcon o_imageForIcon, o_cachedForIcon, o_unmaskedForIcon;
 static FnIconOpt o_imageForIconOpt, o_realForIconOpt, o_unmaskedForIconOpt;
 static FnImageForIcon o_cacheImageForIcon;
-
-typedef id (*FnImgAppear)(id, SEL, id, id, unsigned long long);
-typedef id (*FnImgTrait)(id, SEL, id, id, unsigned long long);
-static FnImgAppear o_imgAppear, o_cachedImgAppear, o_realImgAppear;
-static FnImgTrait o_imgTrait, o_cachedImgTrait, o_realImgTrait;
-static FnIcon o_cachedUnmasked;
-
-static id tb_imgAppear(id self, SEL _cmd, id icon, id appearance, unsigned long long opt) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve imageForIcon:appear:%@ opt=%llu", bid, opt); return img; }
-    }
-    return o_imgAppear ? o_imgAppear(self, _cmd, icon, appearance, opt) : nil;
-}
-
-static id tb_cachedImgAppear(id self, SEL _cmd, id icon, id appearance, unsigned long long opt) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve cachedImageForIcon:appear:%@", bid); return img; }
-    }
-    return o_cachedImgAppear ? o_cachedImgAppear(self, _cmd, icon, appearance, opt) : nil;
-}
-
-static id tb_realImgAppear(id self, SEL _cmd, id icon, id appearance, unsigned long long opt) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve realImageForIcon:appear:%@", bid); return img; }
-    }
-    return o_realImgAppear ? o_realImgAppear(self, _cmd, icon, appearance, opt) : nil;
-}
-
-static id tb_imgTrait(id self, SEL _cmd, id icon, id trait, unsigned long long opt) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve imageForIcon:trait:%@", bid); return img; }
-    }
-    return o_imgTrait ? o_imgTrait(self, _cmd, icon, trait, opt) : nil;
-}
-
-static id tb_cachedImgTrait(id self, SEL _cmd, id icon, id trait, unsigned long long opt) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve cachedImageForIcon:trait:%@", bid); return img; }
-    }
-    return o_cachedImgTrait ? o_cachedImgTrait(self, _cmd, icon, trait, opt) : nil;
-}
-
-static id tb_realImgTrait(id self, SEL _cmd, id icon, id trait, unsigned long long opt) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve realImageForIcon:trait:%@", bid); return img; }
-    }
-    return o_realImgTrait ? o_realImgTrait(self, _cmd, icon, trait, opt) : nil;
-}
-
-static id tb_cachedUnmasked(id self, SEL _cmd, id icon) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(icon);
-        UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve cachedUnmaskedImageForIcon %@", bid); return img; }
-    }
-    return o_cachedUnmasked ? o_cachedUnmasked(self, _cmd, icon) : nil;
-}
-
-// ---- IFImage（IconServices 进程层）----
-typedef id (*IFImgFn)(id, SEL, id);
-typedef id (*IFSizeFn)(id, SEL, CGSize, double);
-static IFImgFn o_ifImgDescriptor;
-static IFSizeFn o_ifImgSize;
-
-static id tb_ifImgDescriptor(id self, SEL _cmd, id descriptor) {
-    NSString *bid = TBNewChannelsEnabled() ? TBBIDFromISIcon(self) : nil;
-    if (bid && TBUIKitIconEnabled()) {
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve IFImage.desc %@", bid); return img; }
-    }
-    return o_ifImgDescriptor ? o_ifImgDescriptor(self, _cmd, descriptor) : nil;
-}
-
-static id tb_ifImgSize(id self, SEL _cmd, CGSize size, double scale) {
-    NSString *bid = TBNewChannelsEnabled() ? TBBIDFromISIcon(self) : nil;
-    if (bid && TBUIKitIconEnabled()) {
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve IFImage.size %@", bid); return img; }
-    }
-    return o_ifImgSize ? o_ifImgSize(self, _cmd, size, scale) : nil;
-}
-
-// ---- SBIconView._iconImageView / SBIconImageCrossfadeView.iconImageView ----
-// ---- SBIconImageView / SBFolderIconImageView（SnowBoard 证据）----
-typedef void (*SetImgFn)(id, SEL, id);
-typedef void (*ResetImgFn)(id, SEL, id);
-static SetImgFn o_setImageOnIconView;
-static ResetImgFn o_resetImageOnIconView;
-
-static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
-    id finalImage = image;
-    BOOL replaced = NO;
-    if (TBNewChannelsEnabled() && TBApplyIconForDesktop()) {
-        @try {
-            id icon = nil;
-            if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
-                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
-            }
-            NSString *bid = TBBIDFromIcon(icon);
-            if (bid) {
-                UIImage *img = TBImageForBundle(bid);
-                if (img) { finalImage = img; replaced = YES; }
-            }
-        } @catch (NSException *e) { }
-    }
-    if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, finalImage);
-    if (replaced) { gServe++; TBLog(@"serve SBIconImageView.setImage %@", TBBIDFromIcon([self valueForKey:@"icon"])); }
-}
-
-static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
-    // resetImageWithAppIcon: 通常与 setImage: 配合，这里只做观察，
-    // 不重复调用 setImage: 避免递归。
-    if (o_resetImageOnIconView) o_resetImageOnIconView(self, _cmd, icon);
-    NSString *bid = TBBIDFromIcon(icon);
-    if (bid && TBApplyIconForDesktop()) {
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"observe resetImageWithAppIcon %@", bid); }
-    }
-}
-
-// ---- SBCalendarApplicationIcon（另一个日历类，SnowBoard 证据）----
-static CalGenFn o_calGen2;
-static CalUnmaskedFn o_calUnmasked2;
-
-static id tb_calGen2(id self, SEL _cmd, TBImageInfo info) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(self);
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve SBCalendarApplicationIcon.generate %@", bid); return img; }
-    }
-    return o_calGen2 ? o_calGen2(self, _cmd, info) : nil;
-}
-
-static id tb_calUnmasked2(id self, SEL _cmd, TBImageInfo info) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(self);
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve SBCalendarApplicationIcon.unmasked %@", bid); return img; }
-    }
-    return o_calUnmasked2 ? o_calUnmasked2(self, _cmd, info) : nil;
-}
-
-// ---- SBCalendarIconImageProvider.iconImageWithInfo:（Mikkyy 证据）----
-typedef id (*ProviderIconFn)(id, SEL, TBImageInfo);
-static ProviderIconFn o_providerIcon;
-
-static id tb_providerIcon(id self, SEL _cmd, TBImageInfo info) {
-    if (TBApplyIconForDesktop()) {
-        UIImage *img = TBImageForBundle(@"com.apple.mobilecal");
-        if (img) { gServe++; TBLog(@"serve SBCalendarIconImageProvider"); return img; }
-    }
-    return o_providerIcon ? o_providerIcon(self, _cmd, info) : nil;
-}
-
-// ---- SBIcon.generateIconImage:（SnowBoard 证据）----
-typedef id (*GenImgOneFn)(id, SEL, id);
-static GenImgOneFn o_genImgOne;
-
-static id tb_genImgOne(id self, SEL _cmd, id image) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(self);
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve SBIcon.generateIconImage %@", bid); return img; }
-    }
-    return o_genImgOne ? o_genImgOne(self, _cmd, image) : nil;
-}
-
-typedef id (*IconImageViewFn)(id, SEL);
-static IconImageViewFn o_iconImageView, o_crossfadeImageView;
-
-static id tb_iconImageView(id self, SEL _cmd) {
-    // 观察路径：只记录，不直接改图（setImage: 由 SBIconImageView hook 统一处理，避免递归）
-    id v = o_iconImageView ? o_iconImageView(self, _cmd) : nil;
-    if (v && TBNewChannelsEnabled() && TBApplyIconForDesktop()) {
-        @try {
-            id icon = nil;
-            if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
-                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
-            }
-            NSString *bid = TBBIDFromIcon(icon);
-            if (bid && TBImageForBundle(bid)) { gServe++; }
-        } @catch (NSException *e) { }
-    }
-    return v;
-}
-
-static id tb_crossfadeImageView(id self, SEL _cmd) {
-    id v = o_crossfadeImageView ? o_crossfadeImageView(self, _cmd) : nil;
-    if (v && TBNewChannelsEnabled() && TBApplyIconForDesktop()) {
-        @try {
-            id icon = nil;
-            if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
-                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
-            }
-            NSString *bid = TBBIDFromIcon(icon);
-            if (bid && TBImageForBundle(bid)) { gServe++; }
-        } @catch (NSException *e) { }
-    }
-    return v;
-}
-
 static FnGen o_generateIconImageWithInfo, o_genericIconImage;
 static FnGenSize o_iconImageOfSize;
 
@@ -782,44 +555,6 @@ static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
         if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
     }
     return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
-}
-
-// ---- 日历专用：SBHCalendarApplicationIcon（MarkTheme 证据）----
-static CalGenFn o_calGen;
-static CalUnmaskedFn o_calUnmasked;
-
-static id tb_calGen(id self, SEL _cmd, TBImageInfo info) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(self);
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve SBHCalendarApplicationIcon.generate %@", bid); return img; }
-    }
-    return o_calGen ? o_calGen(self, _cmd, info) : nil;
-}
-
-static id tb_calUnmasked(id self, SEL _cmd, TBImageInfo info) {
-    if (TBApplyIconForDesktop()) {
-        NSString *bid = TBBIDFromIcon(self);
-        UIImage *img = TBImageForBundle(bid);
-        if (img) { gServe++; TBLog(@"serve SBHCalendarApplicationIcon.unmasked %@", bid); return img; }
-    }
-    return o_calUnmasked ? o_calUnmasked(self, _cmd, info) : nil;
-}
-
-// ---- 日历动态生成器：CUIKDefaultIconGenerator（MarkTheme 证据）----
-typedef id (*CUIKGenFn)(id, SEL, id, id, id, CGSize, double);
-static CUIKGenFn o_cuikGen;
-
-static id tb_cuikGen(id self, SEL _cmd, id comps, id calendar, id format, CGSize size, double scale) {
-    if (TBApplyIconForDesktop()) {
-        UIImage *img = TBImageForBundle(@"com.apple.mobilecal");
-        if (img) {
-            // 直接返回主题底图（保留系统日期绘制由系统完成，这里返回原图避免破坏）
-            gServe++; TBLog(@"serve CUIKDefaultIconGenerator calendar");
-            return img;
-        }
-    }
-    return o_cuikGen ? o_cuikGen(self, _cmd, comps, calendar, format, size, scale) : nil;
 }
 
 static id tb_iconImageOfSize(id self, SEL _cmd, CGSize size, double scale, BOOL gracefully, id drawing) {
@@ -987,35 +722,6 @@ static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
     return ret;
 }
 
-// ---- ISIcon 补充：imageForSize:scale: 与 prepareImageForDescriptor: ----
-typedef id (*ISIconSizeFn)(id, SEL, CGSize, double);
-typedef id (*ISIconPrepFn)(id, SEL, id);
-static ISIconSizeFn o_isiconSize;
-static ISIconPrepFn o_isiconPrep;
-
-static id tb_isicon_size(id self, SEL _cmd, CGSize size, double scale) {
-    @try {
-        NSString *bid = TBBIDFromISIcon(self);
-        if (bid && TBUIKitIconEnabled()) {
-            UIImage *img = TBImageForBundle(bid);
-            if (img) { gServe++; TBLog(@"serve ISIcon.size %@ %.0fx%.0f", bid, size.width, size.height); return img; }
-        }
-    } @catch (NSException *e) { }
-    return o_isiconSize ? o_isiconSize(self, _cmd, size, scale) : nil;
-}
-
-static id tb_isicon_prep(id self, SEL _cmd, id descriptor) {
-    @try {
-        NSString *bid = TBBIDFromISIcon(self);
-        if (bid && TBUIKitIconEnabled()) {
-            UIImage *img = TBImageForBundle(bid);
-            if (img) { gServe++; TBLog(@"serve ISIcon.prep %@", bid); return img; }
-        }
-    } @catch (NSException *e) { }
-    return o_isiconPrep ? o_isiconPrep(self, _cmd, descriptor) : nil;
-}
-
-
 #pragma mark - SpringBoard 资源替换（时钟表盘/指针、文件夹底图）
 
 typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
@@ -1026,7 +732,6 @@ static AppIconFn o_appIcon;
 static AppIconScaleFn o_appIconScale;
 
 static BOOL TBIsThemedResourceName(NSString *name);
-static BOOL TBUIKitIconEnabled(void);
 static NSString *TBBIDFromIcon(id icon);
 
 /// 设置页图标 / 通知中心 共用 UIKit 应用图标入口
@@ -1048,50 +753,6 @@ static UIImage *tb_appIconImageForBIDScale(id self, SEL _cmd, id identifier, int
         if (img) { gServe++; TBLog(@"serve 应用图标 %@ fmt=%d scale=%.0f", identifier, format, scale); return img; }
     }
     return o_appIconScale ? o_appIconScale(self, _cmd, identifier, format, scale) : nil;
-}
-
-// ---- UIKit _iconForResourceProxy（iOS 17.2 设置页/通知中心真实图标通道）----
-typedef UIImage *(*RSProxyFn)(id, SEL, id, int);
-typedef UIImage *(*RSProxyOptFn)(id, SEL, id, int, unsigned long long);
-static RSProxyFn o_rsProxy, o_rsProxyVariant;
-static RSProxyOptFn o_rsProxyOpt;
-
-static NSString *TBBIDFromResourceProxy(id proxy) {
-    if (!proxy) return nil;
-    @try {
-        // LSApplicationProxy / ISIcon 相关
-        for (NSString *k in @[@"applicationIdentifier", @"bundleIdentifier", @"identifier"]) {
-            if ([proxy respondsToSelector:NSSelectorFromString(k)]) {
-                id v = ((id (*)(id, SEL))objc_msgSend)(proxy, NSSelectorFromString(k));
-                if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 3) return v;
-            }
-        }
-        // 某些变体是字符串直接传入
-        if ([proxy isKindOfClass:[NSString class]] && [(NSString *)proxy length] > 3) return proxy;
-    } @catch (NSException *e) { }
-    return nil;
-}
-
-static UIImage *tb_rsProxy(id self, SEL _cmd, id proxy, int format) {
-    if (TBUIKitIconEnabled()) {
-        NSString *bid = TBBIDFromResourceProxy(proxy);
-        if (bid) {
-            UIImage *img = TBImageForBundle(bid);
-            if (img) { gServe++; TBLog(@"serve _iconForResourceProxy %@ fmt=%d", bid, format); return img; }
-        }
-    }
-    return o_rsProxy ? o_rsProxy(self, _cmd, proxy, format) : nil;
-}
-
-static UIImage *tb_rsProxyOpt(id self, SEL _cmd, id proxy, int format, unsigned long long opt) {
-    if (TBUIKitIconEnabled()) {
-        NSString *bid = TBBIDFromResourceProxy(proxy);
-        if (bid) {
-            UIImage *img = TBImageForBundle(bid);
-            if (img) { gServe++; TBLog(@"serve _iconForResourceProxy:options %@ fmt=%d opt=%llu", bid, format, opt); return img; }
-        }
-    }
-    return o_rsProxyOpt ? o_rsProxyOpt(self, _cmd, proxy, format, opt) : nil;
 }
 
 static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
@@ -1190,36 +851,6 @@ static id tb_clockIconImage(id self, SEL _cmd, TBClockInfo info, BOOL mask) {
     return o_clockIconImage ? o_clockIconImage(self, _cmd, info, mask) : nil;
 }
 
-#pragma mark - 通知中心图标（NCNotificationContent.icon，17.2 头文件确认）
-
-typedef id (*NCIconFn)(id, SEL);
-static NCIconFn o_ncIcon;
-
-static id tb_ncIcon(id self, SEL _cmd) {
-    if (TBUIKitIconEnabled()) {
-        @try {
-            // 从 content 找 bundle identifier
-            NSString *bid = nil;
-            if ([self respondsToSelector:NSSelectorFromString(@"notificationRequest")]) {
-                id req = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"notificationRequest"));
-                if ([req respondsToSelector:NSSelectorFromString(@"sectionIdentifier")]) {
-                    id sid = ((id (*)(id, SEL))objc_msgSend)(req, NSSelectorFromString(@"sectionIdentifier"));
-                    if ([sid isKindOfClass:[NSString class]] && [(NSString *)sid containsString:@"."]) bid = sid;
-                }
-            }
-            if (!bid && [self respondsToSelector:NSSelectorFromString(@"sourceBundleIdentifier")]) {
-                id s = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"sourceBundleIdentifier"));
-                if ([s isKindOfClass:[NSString class]] && [(NSString *)s containsString:@"."]) bid = s;
-            }
-            if (bid) {
-                UIImage *img = TBImageForBundle(bid);
-                if (img) { gServe++; TBLog(@"serve 通知中心图标 %@", bid); return img; }
-            }
-        } @catch (NSException *e) { }
-    }
-    return o_ncIcon ? o_ncIcon(self, _cmd) : nil;
-}
-
 #pragma mark - 设置页图标（PSSpecifier，17.2 头文件确认）
 
 // - (void)setupIconImageWithBundle:(id)bundle;
@@ -1274,7 +905,6 @@ static BOOL gDoneCache = NO;
 static BOOL gDoneClock = NO;
 static BOOL gDoneSpecifier = NO;
 static BOOL gDoneGen = NO;
-static BOOL gDoneCalendar = NO;
 
 static void TBInstall(void) {
     // 检测 iOS 主版本
@@ -1310,15 +940,6 @@ static void TBInstall(void) {
                                            (IMP)tb_appIconImageForBID, "应用图标");
         o_appIconScale = (AppIconScaleFn)TBHookClass([UIImage class], @"_applicationIconImageForBundleIdentifier:format:scale:",
                                                      (IMP)tb_appIconImageForBIDScale, "应用图标(scale)");
-        // iOS 17.2 设置页/通知中心实际通道：_iconForResourceProxy
-        if (TBHasMethod([UIImage class], @"_iconForResourceProxy:format:")) {
-            o_rsProxy = (RSProxyFn)TBHookClass([UIImage class], @"_iconForResourceProxy:format:",
-                                               (IMP)tb_rsProxy, "图标ResourceProxy");
-        }
-        if (TBHasMethod([UIImage class], @"_iconForResourceProxy:format:options:")) {
-            o_rsProxyOpt = (RSProxyOptFn)TBHookClass([UIImage class], @"_iconForResourceProxy:format:options:",
-                                                     (IMP)tb_rsProxyOpt, "图标ResourceProxy(opt)");
-        }
         gDoneImageHooks = YES;
     }
 
@@ -1405,110 +1026,15 @@ static void TBInstall(void) {
         if (TBHasMethod(cache, @"cacheImage:forIcon:")) {
             o_cacheImageForIcon = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
         }
-        // Mikkyy/MarkTheme 已验证的 iOS 17.x 变体
-        if (TBHasMethod(cache, @"imageForIcon:imageAppearance:options:")) {
-            o_imgAppear = (FnImgAppear)TBHook(cache, @"imageForIcon:imageAppearance:options:", (IMP)tb_imgAppear, "imageForIcon:appear");
-        }
-        if (TBHasMethod(cache, @"cachedImageForIcon:imageAppearance:options:")) {
-            o_cachedImgAppear = (FnImgAppear)TBHook(cache, @"cachedImageForIcon:imageAppearance:options:", (IMP)tb_cachedImgAppear, "cachedImageForIcon:appear");
-        }
-        if (TBHasMethod(cache, @"realImageForIcon:imageAppearance:options:")) {
-            o_realImgAppear = (FnImgAppear)TBHook(cache, @"realImageForIcon:imageAppearance:options:", (IMP)tb_realImgAppear, "realImageForIcon:appear");
-        }
-        if (TBHasMethod(cache, @"imageForIcon:compatibleWithTraitCollection:options:")) {
-            o_imgTrait = (FnImgTrait)TBHook(cache, @"imageForIcon:compatibleWithTraitCollection:options:", (IMP)tb_imgTrait, "imageForIcon:trait");
-        }
-        if (TBHasMethod(cache, @"cachedImageForIcon:compatibleWithTraitCollection:options:")) {
-            o_cachedImgTrait = (FnImgTrait)TBHook(cache, @"cachedImageForIcon:compatibleWithTraitCollection:options:", (IMP)tb_cachedImgTrait, "cachedImageForIcon:trait");
-        }
-        if (TBHasMethod(cache, @"realImageForIcon:compatibleWithTraitCollection:options:")) {
-            o_realImgTrait = (FnImgTrait)TBHook(cache, @"realImageForIcon:compatibleWithTraitCollection:options:", (IMP)tb_realImgTrait, "realImageForIcon:trait");
-        }
-        if (TBHasMethod(cache, @"cachedUnmaskedImageForIcon:")) {
-            o_cachedUnmasked = (FnIcon)TBHook(cache, @"cachedUnmaskedImageForIcon:", (IMP)tb_cachedUnmasked, "cachedUnmaskedImageForIcon");
-        }
     }
 
-    // IFImage（IconServices）
-    Class ifImage = NSClassFromString(@"IFImage");
-    if (ifImage && !gDoneISIcon) {
-        if (TBHasMethod(ifImage, @"imageForDescriptor:")) {
-            o_ifImgDescriptor = (IFImgFn)TBHook(ifImage, @"imageForDescriptor:", (IMP)tb_ifImgDescriptor, "IFImage.desc");
-        }
-        if (TBHasMethod(ifImage, @"imageForSize:scale:")) {
-            o_ifImgSize = (IFSizeFn)TBHook(ifImage, @"imageForSize:scale:", (IMP)tb_ifImgSize, "IFImage.size");
-        }
-    }
-
-    // SBIconView._iconImageView / SBIconImageCrossfadeView.iconImageView
-    Class iconView = NSClassFromString(@"SBIconView");
-    if (iconView && TBHasMethod(iconView, @"_iconImageView")) {
-        o_iconImageView = (IconImageViewFn)TBHook(iconView, @"_iconImageView", (IMP)tb_iconImageView, "SBIconView._iconImageView");
-    }
-    Class crossfade = NSClassFromString(@"SBIconImageCrossfadeView");
-    if (crossfade && TBHasMethod(crossfade, @"iconImageView")) {
-        o_crossfadeImageView = (IconImageViewFn)TBHook(crossfade, @"iconImageView", (IMP)tb_crossfadeImageView, "crossfade.iconImageView");
-    }
-
-    // generateIconImageWithInfo:（SBIcon 父类）
+    // generateIconImageWithInfo: 仅在 iOS 17.x 上启用（唯一已验证版本）
     if (icon && !gDoneGen) {
         gDoneGen = YES;
         if (TBHasMethod(icon, @"generateIconImageWithInfo:")) {
             o_generateIconImageWithInfo = (FnGen)TBHook(icon, @"generateIconImageWithInfo:",
                                                         (IMP)tb_generateIconImageWithInfo, "generateIconImageWithInfo");
         }
-    }
-
-    // 日历子类 SBHCalendarApplicationIcon（MarkTheme：必须 hook 子类）
-    Class calIcon = NSClassFromString(@"SBHCalendarApplicationIcon");
-    if (calIcon && !gDoneCalendar) {
-        gDoneCalendar = YES;
-        if (TBHasMethod(calIcon, @"generateIconImageWithInfo:")) {
-            o_calGen = (CalGenFn)TBHook(calIcon, @"generateIconImageWithInfo:", (IMP)tb_calGen, "日历generateIcon");
-        }
-        if (TBHasMethod(calIcon, @"unmaskedIconImageWithInfo:")) {
-            o_calUnmasked = (CalUnmaskedFn)TBHook(calIcon, @"unmaskedIconImageWithInfo:", (IMP)tb_calUnmasked, "日历unmasked");
-        }
-    }
-
-    // CUIKDefaultIconGenerator（系统日历动态图标生成器）
-    Class cuik = NSClassFromString(@"CUIKDefaultIconGenerator");
-    if (cuik && TBHasMethod(cuik, @"iconImageWithDateComponents:calendar:format:size:scale:")) {
-        o_cuikGen = (CUIKGenFn)TBHook(cuik, @"iconImageWithDateComponents:calendar:format:size:scale:",
-                                      (IMP)tb_cuikGen, "CUIK日历");
-    }
-
-    // SBCalendarApplicationIcon（SnowBoard：另一个日历类）
-    Class calIcon2 = NSClassFromString(@"SBCalendarApplicationIcon");
-    if (calIcon2) {
-        if (TBHasMethod(calIcon2, @"generateIconImageWithInfo:")) {
-            o_calGen2 = (CalGenFn)TBHook(calIcon2, @"generateIconImageWithInfo:", (IMP)tb_calGen2, "日历2generateIcon");
-        }
-        if (TBHasMethod(calIcon2, @"unmaskedIconImageWithInfo:")) {
-            o_calUnmasked2 = (CalUnmaskedFn)TBHook(calIcon2, @"unmaskedIconImageWithInfo:", (IMP)tb_calUnmasked2, "日历2unmasked");
-        }
-    }
-
-    // SBCalendarIconImageProvider.iconImageWithInfo:（Mikkyy 证据）
-    Class calProvider = NSClassFromString(@"SBCalendarIconImageProvider");
-    if (calProvider && TBHasMethod(calProvider, @"iconImageWithInfo:")) {
-        o_providerIcon = (ProviderIconFn)TBHook(calProvider, @"iconImageWithInfo:", (IMP)tb_providerIcon, "日历Provider");
-    }
-
-    // SBIconImageView.setImage: / resetImageWithAppIcon:（SnowBoard）
-    Class iconImageViewCls = NSClassFromString(@"SBIconImageView");
-    if (iconImageViewCls) {
-        if (TBHasMethod(iconImageViewCls, @"setImage:")) {
-            o_setImageOnIconView = (SetImgFn)TBHook(iconImageViewCls, @"setImage:", (IMP)tb_setImageOnIconView, "SBIconImageView");
-        }
-        if (TBHasMethod(iconImageViewCls, @"resetImageWithAppIcon:")) {
-            o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "resetImageWithAppIcon");
-        }
-    }
-
-    // SBIcon.generateIconImage:（SnowBoard）
-    if (icon && TBHasMethod(icon, @"generateIconImage:")) {
-        o_genImgOne = (GenImgOneFn)TBHook(icon, @"generateIconImage:", (IMP)tb_genImgOne, "generateIconImage");
     }
 }
 
