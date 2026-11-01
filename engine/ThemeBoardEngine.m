@@ -761,6 +761,7 @@ static void TBHealAllIconViews(void) {
         NSInteger fixed = 0;
         for (UIView *w in [[UIApplication sharedApplication] windows]) {
             fixed += TBHealViewTree(w, 0);
+            if (fixed > 400) break;   // 上限保护
         }
         if (fixed > 0) TBLog(@"换主题后重贴 %ld 个图标视图", (long)fixed);
     } @catch (NSException *e) { }
@@ -1763,6 +1764,8 @@ static NSInteger TBInvalidateIconViews(NSArray *icons) {
 }
 
 static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
+    static NSUInteger sReloadSeq = 0;
+    const NSUInteger mySeq = ++sReloadSeq;
     [gLock lock];
     gIndex = nil;
     NSArray *caches = gCaches.allObjects;
@@ -1803,10 +1806,18 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
             }
         }
 
-        NSInteger sent = TBInvalidateIconViews(icons);
-        TBLog(@"已通知图标视图重取 %ld 次", (long)sent);
+        // 通知是 O(图标数 × 缓存数)，主题可能覆盖上千个图标；
+        // 超过上限就跳过，靠下面的窗口遍历（只碰屏幕上的几十个视图）刷新，
+        // 避免主线程被几千次调用堵死触发 watchdog。
+        if (icons.count > 0 && icons.count <= 250) {
+            NSInteger sent = TBInvalidateIconViews(icons);
+            TBLog(@"已通知图标视图重取 %ld 次", (long)sent);
+        } else {
+            TBLog(@"图标数 %lu 超过通知上限，跳过逐个通知，改用窗口遍历刷新", (unsigned long)icons.count);
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
+            if (mySeq != sReloadSeq) return;   // 期间又切了主题，交给最新那次处理
             TBHealAllIconViews();
         });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
