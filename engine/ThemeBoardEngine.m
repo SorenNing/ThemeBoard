@@ -515,7 +515,8 @@ static id tb_imageForIcon(id self, SEL _cmd, id icon) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
         if (img) { gServe++; TBLogOnce([@"imageForIcon|" stringByAppendingString:bid ?: @"?"], @"serve imageForIcon %@", bid); return img; }
-        gMiss++; TBLogOnce([@"miss|" stringByAppendingString:bid ?: @"?"], @"miss %@", bid ?: @"(无bid)");
+        gMiss++;
+        TBLogOnce([@"miss|" stringByAppendingString:bid ?: @"?"], @"miss %@", bid ?: @"(无bid)");
     }
     return o_imageForIcon ? o_imageForIcon(self, _cmd, icon) : nil;
 }
@@ -645,6 +646,38 @@ static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
             }
         } @catch (NSException *e) { }
     }
+}
+
+// ---- 换图标后重贴（拖拽放置/资源库→桌面 时系统直接贴原始图，读端 hook 管不到）----
+// 只在 SBIconView 更换 icon 时触发一次，不在 getter 热路径里，所以不会像
+// 之前那样引起 SpringBoard 闪屏重启。
+typedef void (*SetIconFn)(id, SEL, id, BOOL);
+static SetIconFn o_setIconAnimated;
+
+static void tb_setIconAnimated(id self, SEL _cmd, id icon, BOOL animated) {
+    if (o_setIconAnimated) o_setIconAnimated(self, _cmd, icon, animated);
+    if (!TBApplyIconForDesktop() || TBSafeMode() || !TBEnabled()) return;
+    @try {
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *theme = TBImageForBundle(bid);
+        if (!theme) return;
+        TBLogOnce([@"reapply|" stringByAppendingString:bid ?: @"?"], @"reapply %@", bid);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                id iv = [self valueForKey:@"_iconImageView"];
+                if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) return;
+                SEL boundsSel = NSSelectorFromString(@"bounds");
+                CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(iv, boundsSel);
+                TBInfo fi;
+                fi.size = (b.size.width > 1 && b.size.height > 1) ? b.size : CGSizeMake(60, 60);
+                fi.scale = 0; fi.ratio = 0;
+                UIImage *fit = TBFitImage(theme, fi);
+                if (fit) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(iv, NSSelectorFromString(@"setImage:"), fit);
+                }
+            } @catch (NSException *e) { }
+        });
+    } @catch (NSException *e) { }
 }
 
 // ---- IconServices 生成阶段（拖拽/资源库重建后仍保持主题）----
@@ -1255,6 +1288,7 @@ static BOOL gDoneSpecifier = NO;
 static BOOL gDoneGen = NO;
 static BOOL gDoneISGeneration = NO;
 static BOOL gDoneIconImageView = NO;
+static BOOL gDoneSetIcon = NO;
 static BOOL gDoneIFImage = NO;
 
 static void TBInstall(void) {
@@ -1392,8 +1426,15 @@ static void TBInstall(void) {
         }
     }
 
-    // 暂不安装 _iconImageView / crossfade getter hook：iOS 17.2 的 getter
-    // 属于 SpringBoard 图标初始化热路径，hook 本身会造成闪屏重启。
+    // SBIconView -_setIcon:animated:（拖拽放置后重贴主题图；每个图标只触发一次）
+    Class iconViewCls = NSClassFromString(@"SBIconView");
+    if (iconViewCls && !gDoneSetIcon && TBHasMethod(iconViewCls, @"_setIcon:animated:")) {
+        gDoneSetIcon = YES;
+        o_setIconAnimated = (SetIconFn)TBHook(iconViewCls, @"_setIcon:animated:",
+                                              (IMP)tb_setIconAnimated, "SBIconView._setIcon");
+    }
+
+    // 不安装 _iconImageView / crossfade getter hook：那属于图标初始化热路径。
 
     // iconservicesagent 的最终生成通道：资源库拖拽/桌面重建会重新经过这里。
     // 只在原实现返回后替换 IFImage，失败一律返回原图。
