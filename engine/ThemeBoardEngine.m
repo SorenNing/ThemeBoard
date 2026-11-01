@@ -1315,7 +1315,11 @@ static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
 #pragma mark - SpringBoard 资源替换（时钟表盘/指针、文件夹底图）
 
 typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
+typedef UIImage *(*ImgNameBundleFn)(id, SEL, NSString *, NSBundle *);
+typedef UIImage *(*ImgNameBundleTraitFn)(id, SEL, NSString *, NSBundle *, id);
 static ImgNameFn o_imageNamed, o_imageWithFile;
+static ImgNameBundleFn o_imageNamedInBundle;
+static ImgNameBundleTraitFn o_imageNamedInBundleTrait;
 typedef UIImage *(*AppIconFn)(id, SEL, id, int);
 typedef UIImage *(*AppIconScaleFn)(id, SEL, id, int, double);
 static AppIconFn o_appIcon;
@@ -1345,14 +1349,44 @@ static UIImage *tb_appIconImageForBIDScale(id self, SEL _cmd, id identifier, int
     return o_appIconScale ? o_appIconScale(self, _cmd, identifier, format, scale) : nil;
 }
 
+/// 主题资源请求诊断：时钟/日历相关名字只记一次，命中与否都记
+static void TBLogResourceProbe(NSString *name, NSString *path) {
+    if (!name.length) return;
+    if (!([name hasPrefix:@"Clock"] || [name hasPrefix:@"Calendar"] || [name hasPrefix:@"Keypad"])) return;
+    TBLogOnce([@"resprobe|" stringByAppendingString:name],
+              @"resprobe %@ → %@", name, path ? path.lastPathComponent : @"(主题无此图)");
+}
+
 static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
     if (!TBIsThemedResourceName(name)) {
         return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
     }
     UIImage *img = TBResourceImage(name);
+    TBLogResourceProbe(name, img ? @"hit" : nil);
     if (img) { gServe++; TBLog(@"serve 资源 %@", name); return img; }
-    TBProbe(@"imageNamed 未命中 %@", name);
     return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
+}
+
+/// +[UIImage imageNamed:inBundle:]、+[UIImage imageNamed:inBundle:compatibleWithTraitCollection:]
+/// SpringBoard 的时钟视图有时走这两个变体，只挂 imageNamed: 拦不到
+static UIImage *tb_imageNamedInBundle(id self, SEL _cmd, NSString *name, NSBundle *bundle) {
+    if (!TBIsThemedResourceName(name)) {
+        return o_imageNamedInBundle ? o_imageNamedInBundle(self, _cmd, name, bundle) : nil;
+    }
+    UIImage *img = TBResourceImage(name);
+    TBLogResourceProbe(name, img ? @"hit(bundle)" : nil);
+    if (img) { gServe++; TBLog(@"serve 资源(bundle) %@", name); return img; }
+    return o_imageNamedInBundle ? o_imageNamedInBundle(self, _cmd, name, bundle) : nil;
+}
+
+static UIImage *tb_imageNamedInBundleTrait(id self, SEL _cmd, NSString *name, NSBundle *bundle, id trait) {
+    if (!TBIsThemedResourceName(name)) {
+        return o_imageNamedInBundleTrait ? o_imageNamedInBundleTrait(self, _cmd, name, bundle, trait) : nil;
+    }
+    UIImage *img = TBResourceImage(name);
+    TBLogResourceProbe(name, img ? @"hit(bundleTrait)" : nil);
+    if (img) { gServe++; TBLog(@"serve 资源(bundleTrait) %@", name); return img; }
+    return o_imageNamedInBundleTrait ? o_imageNamedInBundleTrait(self, _cmd, name, bundle, trait) : nil;
 }
 
 /// 只有这些名字才值得查主题资源。imageWithContentsOfFile 是极热接口，
@@ -1527,6 +1561,12 @@ static void TBInstall(void) {
                                               (IMP)tb_imageNamed, "UIImage.imageNamed");
         o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
                                                  (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
+        o_imageNamedInBundle = (ImgNameBundleFn)TBHookClass([UIImage class], @"imageNamed:inBundle:",
+                                                            (IMP)tb_imageNamedInBundle, "UIImage.imageNamed:inBundle");
+        o_imageNamedInBundleTrait = (ImgNameBundleTraitFn)TBHookClass([UIImage class],
+                                                            @"imageNamed:inBundle:compatibleWithTraitCollection:",
+                                                            (IMP)tb_imageNamedInBundleTrait,
+                                                            "UIImage.imageNamed:inBundle:trait");
         o_pathForRes = (BundlePathFn)TBHookClass([NSBundle class], @"pathForResource:ofType:",
                                                  (IMP)tb_pathForRes, "NSBundle.pathForResource");
         o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
