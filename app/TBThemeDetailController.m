@@ -73,14 +73,11 @@ static NSString *const kGridID = @"grid";
     [self.applyButton setTitle:(active ? @"已应用" : @"应用这个主题") forState:UIControlStateNormal];
     self.applyButton.alpha = active ? 0.55 : 1.0;
     NSUInteger miss = self.installed > self.covered ? self.installed - self.covered : 0;
+    // 右上角只保留「缺 N」（缺失列表入口）；应用/导出在卡片的按钮里
     self.navigationItem.rightBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStylePlain
-                                        target:self action:@selector(exportTapped)],
         [[UIBarButtonItem alloc] initWithTitle:(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖")
                                          style:UIBarButtonItemStylePlain
                                         target:self action:@selector(missingTapped)],
-        [[UIBarButtonItem alloc] initWithTitle:@"应用" style:UIBarButtonItemStyleDone
-                                        target:self action:@selector(applyTapped)],
     ];
 }
 
