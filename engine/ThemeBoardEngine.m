@@ -140,7 +140,7 @@ static void TBLog(NSString *fmt, ...) {
 
     // 所有进程都写，但每进程限量 60 行（用于观察 Preferences / iconservicesagent 等进程的行为）
     static int sPerProcLines = 0;
-    if (sPerProcLines >= 400) return;
+    if (sPerProcLines >= 2000) return;
     sPerProcLines++;
     const char *lp = TBLogFilePath();
     if (!lp) return;
@@ -157,6 +157,24 @@ static void TBLog(NSString *fmt, ...) {
         fprintf(f, "%s", [line UTF8String]);
         fclose(f);
     });
+}
+
+/// 同一 key 只记一次（启动时上百个图标会把日志配额吃光，导致后面的事件记不上）
+static void TBLogOnce(NSString *key, NSString *fmt, ...) {
+    static NSMutableSet *seen = nil;
+    static NSLock *lock = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seen = [NSMutableSet set]; lock = [[NSLock alloc] init]; });
+    if (!key.length) return;
+    [lock lock];
+    BOOL first = ![seen containsObject:key];
+    if (first && seen.count < 2000) [seen addObject:key];
+    [lock unlock];
+    if (!first) return;
+    va_list ap; va_start(ap, fmt);
+    NSString *body = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    TBLog(@"%@", body);
 }
 
 #pragma mark - 设置 / 索引
@@ -496,8 +514,8 @@ static id tb_imageForIcon(id self, SEL _cmd, id icon) {
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve imageForIcon %@", bid); return img; }
-        gMiss++; TBLog(@"miss %@", bid ?: @"(无bid)");
+        if (img) { gServe++; TBLogOnce([@"imageForIcon|" stringByAppendingString:bid ?: @"?"], @"serve imageForIcon %@", bid); return img; }
+        gMiss++; TBLogOnce([@"miss|" stringByAppendingString:bid ?: @"?"], @"miss %@", bid ?: @"(无bid)");
     }
     return o_imageForIcon ? o_imageForIcon(self, _cmd, icon) : nil;
 }
@@ -507,7 +525,7 @@ static id tb_imageForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt)
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve imageForIcon:options: %@ opt=%llu", bid, opt); return img; }
+        if (img) { gServe++; TBLogOnce([@"imageForIconOpt|" stringByAppendingString:bid ?: @"?"], @"serve imageForIcon:options: %@", bid); return img; }
     }
     return o_imageForIconOpt ? o_imageForIconOpt(self, _cmd, icon, opt) : nil;
 }
@@ -517,7 +535,7 @@ static id tb_cachedForIcon(id self, SEL _cmd, id icon) {
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve cachedImageForIcon %@", bid); return img; }
+        if (img) { gServe++; TBLogOnce([@"cachedImageForIcon|" stringByAppendingString:bid ?: @"?"], @"serve cachedImageForIcon %@", bid); return img; }
     }
     return o_cachedForIcon ? o_cachedForIcon(self, _cmd, icon) : nil;
 }
@@ -527,7 +545,7 @@ static id tb_realForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) 
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve realImageForIcon %@", bid); return img; }
+        if (img) { gServe++; TBLogOnce([@"realImageForIcon|" stringByAppendingString:bid ?: @"?"], @"serve realImageForIcon %@", bid); return img; }
     }
     return o_realForIconOpt ? o_realForIconOpt(self, _cmd, icon, opt) : nil;
 }
@@ -537,7 +555,7 @@ static id tb_unmaskedForIcon(id self, SEL _cmd, id icon) {
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon %@", bid); return img; }
+        if (img) { gServe++; TBLogOnce([@"unmaskedImageForIcon|" stringByAppendingString:bid ?: @"?"], @"serve unmaskedImageForIcon %@", bid); return img; }
     }
     return o_unmaskedForIcon ? o_unmaskedForIcon(self, _cmd, icon) : nil;
 }
@@ -547,7 +565,7 @@ static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long o
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *img = TBFitImage(TBImageForBundle(bid), TBInfoOfCache(self));
-        if (img) { gServe++; TBLog(@"serve unmaskedImageForIcon:options %@", bid); return img; }
+        if (img) { gServe++; TBLogOnce([@"unmaskedImageForIconOpt|" stringByAppendingString:bid ?: @"?"], @"serve unmaskedImageForIcon:options %@", bid); return img; }
     }
     return o_unmaskedForIconOpt ? o_unmaskedForIconOpt(self, _cmd, icon, opt) : nil;
 }
@@ -555,15 +573,19 @@ static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long o
 /// 缓存落盘的那一刻换掉图 —— 这样所有后续消费者（含变体缓存）拿到的都是主题图
 static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
     TBRemember(self);
-    static int loggedCache = 0;
-    if (loggedCache < 40) {
-        loggedCache++;
-        NSString *sz = @"-";
-        if ([image isKindOfClass:[UIImage class]]) {
-            sz = [NSString stringWithFormat:@"%.0fx%.0f", ((UIImage *)image).size.width, ((UIImage *)image).size.height];
-        }
-        TBLog(@"api=cacheImage bid=%@ cls=%@ img=%@", TBBIDFromIcon(icon) ?: @"(nil)",
-              NSStringFromClass(object_getClass(image)), sz);
+    NSString *bid = TBBIDFromIcon(icon);
+    // 缓存写入端接管：拖拽/重建时系统会把「非主题」图写进缓存，这里拦下来换成主题图
+    if (bid.length && TBApplyIconForDesktop() && !TBSafeMode()) {
+        @try {
+            UIImage *mine = TBImageForBundle(bid);
+            if (mine && image != mine) {
+                UIImage *fit = TBFitImage(mine, TBInfoOfCache(self));
+                if (fit) {
+                    TBLogOnce([@"cachewrite|" stringByAppendingString:bid], @"cachewrite %@", bid);
+                    return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, fit, icon) : nil;
+                }
+            }
+        } @catch (NSException *e) { }
     }
     return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, image, icon) : nil;
 }
@@ -949,7 +971,7 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
     static int loggedIcon0 = 0;
-    if (loggedIcon0 < 20) { loggedIcon0++; TBLog(@"api=ISIcon.cg1 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
+    if (loggedIcon0 < 20) { loggedIcon0++; TBLogOnce([@"ISIcon.cg1|" stringByAppendingString:(TBBIDFromISIcon(self) ?: @"(nil)")], @"api=ISIcon.cg1 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     if (!TBApplyEnabled(@"ApplySettings")) {
         return o_isiconCG ? o_isiconCG(self, _cmd, descriptor) : NULL;
     }
@@ -970,7 +992,7 @@ static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
 
 static CGImageRef tb_isicon_cg2(id self, SEL _cmd, id descriptor) {
     static int loggedIcon1 = 0;
-    if (loggedIcon1 < 20) { loggedIcon1++; TBLog(@"api=ISIcon.cg2 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
+    if (loggedIcon1 < 20) { loggedIcon1++; TBLogOnce([@"ISIcon.cg2|" stringByAppendingString:(TBBIDFromISIcon(self) ?: @"(nil)")], @"api=ISIcon.cg2 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     if (!TBApplyEnabled(@"ApplySettings")) {
         return o_isiconCG2 ? o_isiconCG2(self, _cmd, descriptor) : NULL;
     }
@@ -996,7 +1018,7 @@ static BOOL TBIsDynamicBID(NSString *bid) {
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
     static int loggedIcon2 = 0;
-    if (loggedIcon2 < 20) { loggedIcon2++; TBLog(@"api=ISIcon.img1 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
+    if (loggedIcon2 < 20) { loggedIcon2++; TBLogOnce([@"ISIcon.img1|" stringByAppendingString:(TBBIDFromISIcon(self) ?: @"(nil)")], @"api=ISIcon.img1 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     id ret = o_isiconImg ? o_isiconImg(self, _cmd, descriptor) : nil;
     if (!TBApplyEnabled(@"ApplySettings")) return ret;
 
@@ -1024,7 +1046,7 @@ static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
 
 static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
     static int loggedIcon3 = 0;
-    if (loggedIcon3 < 20) { loggedIcon3++; TBLog(@"api=ISIcon.img2 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
+    if (loggedIcon3 < 20) { loggedIcon3++; TBLogOnce([@"ISIcon.img2|" stringByAppendingString:(TBBIDFromISIcon(self) ?: @"(nil)")], @"api=ISIcon.img2 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     id ret = o_isiconImg2 ? o_isiconImg2(self, _cmd, descriptor) : nil;
     if (!TBApplyEnabled(@"ApplySettings")) return ret;
 
