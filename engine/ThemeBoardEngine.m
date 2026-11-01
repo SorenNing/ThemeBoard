@@ -59,6 +59,8 @@ static BOOL TBHasMethod(Class cls, NSString *selName) {
     return [cls instancesRespondToSelector:sel] || [cls respondsToSelector:sel];
 }
 
+static BOOL TBUIKitIconEnabled(void);
+static NSString *TBBIDFromISIcon(id icon);
 static NSString *TBProcName(void) {
     static NSString *name = nil;
     if (!name) name = [[NSProcessInfo processInfo] processName] ?: @"?";
@@ -555,6 +557,40 @@ static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
         if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
     }
     return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
+}
+
+// ---- IFImage（IconServices 图标服务，快捷指令/资源库共用）----
+typedef id (*IFImgFn)(id, SEL, id);
+typedef id (*IFSizeFn)(id, SEL, CGSize, double);
+static IFImgFn o_ifImgDescriptor;
+static IFSizeFn o_ifImgSize;
+
+static id tb_ifImgDescriptor(id self, SEL _cmd, id descriptor) {
+    if (!TBEnabled() || TBSafeMode()) {
+        return o_ifImgDescriptor ? o_ifImgDescriptor(self, _cmd, descriptor) : nil;
+    }
+    @try {
+        NSString *bid = TBBIDFromISIcon(self);
+        if (bid.length) {
+            UIImage *img = TBImageForBundle(bid);
+            if (img) { gServe++; TBLog(@"serve IFImage.desc %@", bid); return img; }
+        }
+    } @catch (NSException *e) { }
+    return o_ifImgDescriptor ? o_ifImgDescriptor(self, _cmd, descriptor) : nil;
+}
+
+static id tb_ifImgSize(id self, SEL _cmd, CGSize size, double scale) {
+    if (!TBEnabled() || TBSafeMode()) {
+        return o_ifImgSize ? o_ifImgSize(self, _cmd, size, scale) : nil;
+    }
+    @try {
+        NSString *bid = TBBIDFromISIcon(self);
+        if (bid.length) {
+            UIImage *img = TBImageForBundle(bid);
+            if (img) { gServe++; TBLog(@"serve IFImage.size %@", bid); return img; }
+        }
+    } @catch (NSException *e) { }
+    return o_ifImgSize ? o_ifImgSize(self, _cmd, size, scale) : nil;
 }
 
 static id tb_iconImageOfSize(id self, SEL _cmd, CGSize size, double scale, BOOL gracefully, id drawing) {
