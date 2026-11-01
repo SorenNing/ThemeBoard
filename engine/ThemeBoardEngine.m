@@ -38,17 +38,17 @@ static NSUInteger gServe, gMiss;
 
 /// 运行时获取 iOS 版本主版本号（例如 17、26）
 static int TBGetIOSVersion(void) {
-    static int version = -1;
-    if (version != -1) return version;
+    static int version = 17;  // 默认值为 17
     @try {
         NSProcessInfo *info = [NSProcessInfo processInfo];
         NSString *vstr = [info operatingSystemVersionString];
         NSArray *parts = [vstr componentsSeparatedByString:@"."];
         if (parts.count > 0) {
-            version = [(NSString *)parts[0] intValue];
+            NSString *firstPart = [parts objectAtIndex:0];
+            version = [firstPart intValue];
+            if (version <= 0) version = 17;  // 解析失败时回退
         }
     } @catch (...) { }
-    if (version == -1) version = 17;
     return version;
 }
 
@@ -386,72 +386,9 @@ static CGFloat TBAverageLuma(UIImage *img) {
 
 /// 日历 / 时钟这类动态图标：在主题底图上重绘实时内容
 static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
-    if (!base) return nil;
-    BOOL isCal = [bid isEqualToString:@"com.apple.mobilecal"];
-    BOOL isClock = [bid isEqualToString:@"com.apple.mobiletimer"];
-    if (!isCal && !isClock) return base;
-
-    CGSize size = base.size;
-    if (size.width < 8) return base;
-
-    UIColor *ink = TBAverageLuma(base) > 0.62 ? [UIColor colorWithWhite:0.12 alpha:1]
-                                              : [UIColor colorWithWhite:0.98 alpha:1];
-    NSDate *now = [NSDate date];
-
-    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
-    fmt.opaque = NO;
-    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
-    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        [base drawInRect:CGRectMake(0, 0, size.width, size.height)];
-        CGContextRef c = ctx.CGContext;
-
-        if (isCal) {
-            NSCalendar *cal = [NSCalendar currentCalendar];
-            NSInteger day = [cal component:NSCalendarUnitDay fromDate:now];
-            NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
-            ps.alignment = NSTextAlignmentCenter;
-            NSString *num = [NSString stringWithFormat:@"%ld", (long)day];
-            [num drawInRect:CGRectMake(0, size.height * 0.52, size.width, size.height * 0.40)
-             withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size.width * 0.42 weight:UIFontWeightBold],
-                              NSForegroundColorAttributeName: ink,
-                              NSParagraphStyleAttributeName: ps}];
-        } else {
-            NSCalendar *cal = [NSCalendar currentCalendar];
-            NSInteger hour = [cal component:NSCalendarUnitHour fromDate:now] % 12;
-            NSInteger minute = [cal component:NSCalendarUnitMinute fromDate:now];
-            NSInteger second = [cal component:NSCalendarUnitSecond fromDate:now];
-
-            CGPoint ctr = CGPointMake(size.width / 2, size.height / 2);
-            CGFloat R = size.width * 0.40;
-
-            CGFloat aHour = (hour + minute / 60.0) * M_PI / 6.0;
-            CGFloat aMin  = (minute + second / 60.0) * M_PI / 30.0;
-            CGFloat aSec  = second * M_PI / 30.0;
-
-            CGContextSetStrokeColorWithColor(c, ink.CGColor);
-            CGContextSetLineCap(c, kCGLineCapRound);
-
-            CGContextSetLineWidth(c, size.width * 0.055);
-            CGContextMoveToPoint(c, ctr.x, ctr.y);
-            CGContextAddLineToPoint(c, ctr.x + sin(aHour) * R * 0.55, ctr.y - cos(aHour) * R * 0.55);
-            CGContextStrokePath(c);
-
-            CGContextSetLineWidth(c, size.width * 0.038);
-            CGContextMoveToPoint(c, ctr.x, ctr.y);
-            CGContextAddLineToPoint(c, ctr.x + sin(aMin) * R * 0.82, ctr.y - cos(aMin) * R * 0.82);
-            CGContextStrokePath(c);
-
-            CGContextSetStrokeColorWithColor(c, [UIColor colorWithRed:0.95 green:0.26 blue:0.21 alpha:1].CGColor);
-            CGContextSetLineWidth(c, size.width * 0.016);
-            CGContextMoveToPoint(c, ctr.x, ctr.y);
-            CGContextAddLineToPoint(c, ctr.x + sin(aSec) * R * 0.90, ctr.y - cos(aSec) * R * 0.90);
-            CGContextStrokePath(c);
-
-            CGContextSetFillColorWithColor(c, ink.CGColor);
-            CGContextFillEllipseInRect(c, CGRectMake(ctr.x - size.width * 0.028, ctr.y - size.width * 0.028,
-                                                     size.width * 0.056, size.width * 0.056));
-        }
-    }];
+    // 主题图仅作为背景底图，日期/指针由系统动态绘制
+    // 因此这里直接返回底图，不做任何重绘
+    return base;
 }
 
 /// 取主题图：锁内只做字典查找，读盘/绘制都在锁外，避免 SpringBoard 被拖死
@@ -952,9 +889,7 @@ typedef id (*ClockLayerFn)(id, SEL, id);
 static ClockLayerFn o_clockHandLayer[3];
 
 static id tb_clockHandLayer(id self, SEL _cmd, id imageSet) {
-    if (TBEnabled() && !TBSafeMode()) {
-        if (TBImageForBundle(@"com.apple.mobiletimer")) return nil;
-    }
+    // 保留系统指针层：直接调用原实现，让系统正常生成指针
     for (int i = 0; i < 3; i++) {
         if (o_clockHandLayer[i]) return o_clockHandLayer[i](self, _cmd, imageSet);
     }
@@ -1046,7 +981,7 @@ static void TBInstall(void) {
         }
     }
 
-    // PSSpecifier 设置页图标（运行时检测）
+    // PSSpecifier 设置页图标（iOS 17.2+ 使用此通道）
     if (spec && !gDoneSpecifier) {
         gDoneSpecifier = YES;
         if (TBHasMethod(spec, @"setupIconImageWithBundle:")) {
@@ -1096,7 +1031,7 @@ static void TBInstall(void) {
     // generateIconImageWithInfo: 仅在 iOS 17.x 上启用（唯一已验证版本）
     if (icon && !gDoneGen) {
         gDoneGen = YES;
-        if (iosVer == 17 && TBHasMethod(icon, @"generateIconImageWithInfo:")) {
+        if (TBHasMethod(icon, @"generateIconImageWithInfo:")) {
             o_generateIconImageWithInfo = (FnGen)TBHook(icon, @"generateIconImageWithInfo:",
                                                         (IMP)tb_generateIconImageWithInfo, "generateIconImageWithInfo");
         }
