@@ -36,6 +36,29 @@ static NSUInteger gServe, gMiss;
 
 #pragma mark - 日志
 
+/// 运行时获取 iOS 版本主版本号（例如 17、26）
+static int TBGetIOSVersion(void) {
+    static int version = -1;
+    if (version != -1) return version;
+    @try {
+        NSProcessInfo *info = [NSProcessInfo processInfo];
+        NSString *vstr = [info operatingSystemVersionString];
+        NSArray *parts = [vstr componentsSeparatedByString:@"."];
+        if (parts.count > 0) {
+            version = [(NSString *)parts[0] intValue];
+        }
+    } @catch (...) { }
+    if (version == -1) version = 17;
+    return version;
+}
+
+/// 检测某个类是否有指定方法（运行时自适应）
+static BOOL TBHasMethod(Class cls, NSString *selName) {
+    if (!cls) return NO;
+    SEL sel = NSSelectorFromString(selName);
+    return [cls instancesRespondToSelector:sel] || [cls respondsToSelector:sel];
+}
+
 static NSString *TBProcName(void) {
     static NSString *name = nil;
     if (!name) name = [[NSProcessInfo processInfo] processName] ?: @"?";
@@ -931,14 +954,12 @@ static BOOL gDoneSpecifier = NO;
 static BOOL gDoneGen = NO;
 
 static void TBInstall(void) {
+    // 检测 iOS 主版本
+    int iosVer = TBGetIOSVersion();
     Class cache = NSClassFromString(@"SBHIconImageCache");
     Class icon  = NSClassFromString(@"SBIcon");
-    Class leaf  = NSClassFromString(@"SBLeafIcon");
     if (gIsPrimary) {
-        TBLog(@"类状态: SBHIconImageCache=%@ SBIcon=%@ UIActivity=%@ ISIcon=%@",
-              cache ? @"有" : @"无", icon ? @"有" : @"无",
-              NSClassFromString(@"UIActivity") ? @"有" : @"无",
-              NSClassFromString(@"ISIcon") ? @"有" : @"无");
+        TBLog(@"=== iOS 版本=%d 类状态: SBHIconImageCache=%@ SBIcon=%@ ===", iosVer, cache ? @"有" : @"无", icon ? @"有" : @"无");
     }
 
     // 只替换主题里确实存在的同名资源，其它一概放行
@@ -994,19 +1015,41 @@ static void TBInstall(void) {
         gDoneActivity = YES;
     }
 
+    // SBHIconImageCache 主通道（所有版本的核心缓存接口）
     if (cache && !gDoneCache) {
         gDoneCache = YES;
-        o_imageForIcon        = (FnIcon)TBHook(cache, @"imageForIcon:", (IMP)tb_imageForIcon, "imageForIcon");
-        o_imageForIconOpt     = (FnIconOpt)TBHook(cache, @"imageForIcon:options:", (IMP)tb_imageForIconOpt, "imageForIcon:options");
-        o_cachedForIcon       = (FnIcon)TBHook(cache, @"cachedImageForIcon:", (IMP)tb_cachedForIcon, "cachedImageForIcon");
-        o_realForIconOpt      = (FnIconOpt)TBHook(cache, @"realImageForIcon:options:", (IMP)tb_realForIconOpt, "realImageForIcon:options");
-        o_unmaskedForIcon     = (FnIcon)TBHook(cache, @"unmaskedImageForIcon:", (IMP)tb_unmaskedForIcon, "unmaskedImageForIcon");
-        o_unmaskedForIconOpt  = (FnIconOpt)TBHook(cache, @"unmaskedImageForIcon:options:", (IMP)tb_unmaskedForIconOpt, "unmaskedImageForIcon:options");
-        o_cacheImageForIcon   = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
+        // 跨版本最稳定的核心方法
+        if (TBHasMethod(cache, @"imageForIcon:")) {
+            o_imageForIcon = (FnIcon)TBHook(cache, @"imageForIcon:", (IMP)tb_imageForIcon, "imageForIcon");
+        }
+        if (TBHasMethod(cache, @"imageForIcon:options:")) {
+            o_imageForIconOpt = (FnIconOpt)TBHook(cache, @"imageForIcon:options:", (IMP)tb_imageForIconOpt, "imageForIcon:options");
+        }
+        if (TBHasMethod(cache, @"cachedImageForIcon:")) {
+            o_cachedForIcon = (FnIcon)TBHook(cache, @"cachedImageForIcon:", (IMP)tb_cachedForIcon, "cachedImageForIcon");
+        }
+        // iOS 17.2+ 特有
+        if (iosVer >= 17 && TBHasMethod(cache, @"realImageForIcon:options:")) {
+            o_realForIconOpt = (FnIconOpt)TBHook(cache, @"realImageForIcon:options:", (IMP)tb_realForIconOpt, "realImageForIcon:options");
+        }
+        if (iosVer >= 17 && TBHasMethod(cache, @"unmaskedImageForIcon:")) {
+            o_unmaskedForIcon = (FnIcon)TBHook(cache, @"unmaskedImageForIcon:", (IMP)tb_unmaskedForIcon, "unmaskedImageForIcon");
+        }
+        if (iosVer >= 17 && TBHasMethod(cache, @"unmaskedImageForIcon:options:")) {
+            o_unmaskedForIconOpt = (FnIconOpt)TBHook(cache, @"unmaskedImageForIcon:options:", (IMP)tb_unmaskedForIconOpt, "unmaskedImageForIcon:options");
+        }
+        if (TBHasMethod(cache, @"cacheImage:forIcon:")) {
+            o_cacheImageForIcon = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
+        }
     }
+    // generateIconImageWithInfo: 仅在 iOS 17.x 上启用（唯一已验证版本）
+    // 16.x/18.x/26.x 跳过，因为结构体参数 TBImageInfo 可能变化
     if (icon && !gDoneGen) {
         gDoneGen = YES;
-        o_generateIconImageWithInfo = (FnGen)TBHook(icon, @"generateIconImageWithInfo:", (IMP)tb_generateIconImageWithInfo, "generateIconImageWithInfo");
+        if (iosVer == 17 && TBHasMethod(icon, @"generateIconImageWithInfo:")) {
+            o_generateIconImageWithInfo = (FnGen)TBHook(icon, @"generateIconImageWithInfo:",
+                                                        (IMP)tb_generateIconImageWithInfo, "generateIconImageWithInfo");
+        }
     }
 }
 
