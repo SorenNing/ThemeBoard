@@ -227,15 +227,17 @@ static NSString *const kGridID = @"grid";
         [cell.contentView addSubview:btn];
         self.applyButton = btn;
 
-        // 导出按钮（与「应用」并排）
+        // 导出按钮（与应用同款玻璃：半透明填充 + 白边 + 同圆角）
         UIButton *exp = [UIButton buttonWithType:UIButtonTypeSystem];
         exp.translatesAutoresizingMaskIntoConstraints = NO;
         [exp setTitle:@"导出" forState:UIControlStateNormal];
-        exp.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-        exp.tintColor = [UIColor whiteColor];
-        exp.backgroundColor = [UIColor colorWithRed:0.3 green:0.5 blue:0.9 alpha:1];
+        exp.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        [exp setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        exp.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                             [UIColor colorWithWhite:1 alpha:0.14]);
         exp.layer.cornerRadius = 13;
         exp.layer.cornerCurve = kCACornerCurveContinuous;
+        TBApplyRim(exp, 0.55);
         [exp addTarget:self action:@selector(exportTapped) forControlEvents:UIControlEventTouchUpInside];
         [cell.contentView addSubview:exp];
         self.exportButton = exp;
