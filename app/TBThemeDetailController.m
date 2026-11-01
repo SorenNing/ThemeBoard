@@ -162,7 +162,7 @@ static NSString *const kGridID = @"grid";
 }
 
 - (CGFloat)tableView:(UITableView *)t heightForRowAtIndexPath:(NSIndexPath *)ip {
-    return ip.section == 0 ? 190 : 88;
+    return ip.section == 0 ? 244 : 88;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -249,14 +249,15 @@ static NSString *const kGridID = @"grid";
 
             [btn.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
             [btn.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-            [btn.trailingAnchor constraintEqualToAnchor:exp.leadingAnchor constant:-10],
-            [btn.heightAnchor constraintEqualToConstant:44],
-            [btn.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-14],
+            [btn.heightAnchor constraintEqualToConstant:64],
+            [btn.widthAnchor constraintEqualToAnchor:exp.widthAnchor multiplier:3.0],
 
-            [exp.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
-            [exp.leadingAnchor constraintEqualToAnchor:btn.trailingAnchor constant:10],
+            [exp.topAnchor constraintEqualToAnchor:btn.topAnchor],
             [exp.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
-            [exp.heightAnchor constraintEqualToConstant:44],
+            [exp.heightAnchor constraintEqualToAnchor:btn.heightAnchor],
+            [exp.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-14],
+
+            [btn.trailingAnchor constraintEqualToAnchor:exp.leadingAnchor constant:-12],
         ]];
         return cell;
     }

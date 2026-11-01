@@ -1,6 +1,6 @@
 Package: com.ning.themeboard.engine
 Name: ThemeBoard 引擎
-Version: 0.13.8
+Version: 0.13.10
 Architecture: iphoneos-arm64e
 Description: ThemeBoard 的图标替换引擎（注入 SpringBoard）。只需要装一次，之后换主题不用重装。
 Maintainer: Ning
