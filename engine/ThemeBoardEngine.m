@@ -559,6 +559,32 @@ static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
     return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
 }
 
+// ---- SBIconImageView.setImage:（SnowBoard 核心通道，快捷指令桌面）----
+typedef void (*SetImgFn)(id, SEL, id);
+static SetImgFn o_setImageOnIconView;
+
+static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
+    if (TBEnabled() && !TBSafeMode()) {
+        @try {
+            id icon = nil;
+            if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
+                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
+            }
+            NSString *bid = TBBIDFromIcon(icon);
+            if (bid) {
+                UIImage *img = TBImageForBundle(bid);
+                if (img) {
+                    // 只调用一次原实现，用主题图（不递归）
+                    if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, img);
+                    gServe++; TBLog(@"serve SBIconImageView.setImage %@", bid);
+                    return;
+                }
+            }
+        } @catch (NSException *e) { }
+    }
+    if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, image);
+}
+
 // ---- IFImage（IconServices 图标服务，快捷指令/资源库共用）----
 typedef id (*IFImgFn)(id, SEL, id);
 typedef id (*IFSizeFn)(id, SEL, CGSize, double);
@@ -1062,6 +1088,12 @@ static void TBInstall(void) {
         if (TBHasMethod(cache, @"cacheImage:forIcon:")) {
             o_cacheImageForIcon = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
         }
+    }
+
+    // SBIconImageView.setImage:（安全版，SnowBoard 通道）
+    Class iconImageViewCls = NSClassFromString(@"SBIconImageView");
+    if (iconImageViewCls && TBHasMethod(iconImageViewCls, @"setImage:")) {
+        o_setImageOnIconView = (SetImgFn)TBHook(iconImageViewCls, @"setImage:", (IMP)tb_setImageOnIconView, "SBIconImageView");
     }
 
     // IFImage（IconServices 通道）
