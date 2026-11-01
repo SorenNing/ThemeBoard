@@ -748,7 +748,15 @@ static id TBImageViewForIconView(id view) {
 static BOOL TBApplyThemeToIconView(id self) {
     if (!self) return NO;
     @try {
-        id iv = TBImageViewForIconView(self);
+        // SBIconImageView / SBHClockApplicationIconImageView / SBFolderIconImageView
+        // 本身就是承载图片的视图，不要再往子视图里找
+        id iv = nil;
+        if ([self respondsToSelector:NSSelectorFromString(@"image")] &&
+            [self respondsToSelector:NSSelectorFromString(@"setImage:")]) {
+            iv = self;
+        } else {
+            iv = TBImageViewForIconView(self);
+        }
         if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"image")] ||
             ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) {
             TBLogOnce([@"skip-iv|" stringByAppendingString:NSStringFromClass([self class])],
@@ -788,28 +796,46 @@ static BOOL TBApplyThemeToIconView(id self) {
     return NO;
 }
 
-static NSInteger TBHealViewTree(UIView *v, NSInteger depth) {
+static NSInteger TBHealViewTree(UIView *v, NSInteger depth, NSMutableArray *iconsOut) {
     if (!v || depth > 12) return 0;
     NSInteger fixed = 0;
-    if ([v respondsToSelector:NSSelectorFromString(@"icon")] ||
-        [v respondsToSelector:NSSelectorFromString(@"_iconImageView")]) {
+    BOOL looksLikeIconView = ([v respondsToSelector:NSSelectorFromString(@"icon")] ||
+                              [v respondsToSelector:NSSelectorFromString(@"_iconImageView")]);
+    if (looksLikeIconView) {
+        if (iconsOut) {
+            @try {
+                SEL iconSel = NSSelectorFromString(@"icon");
+                if ([v respondsToSelector:iconSel]) {
+                    id icon = ((id (*)(id, SEL))objc_msgSend)(v, iconSel);
+                    if (icon && ![iconsOut containsObject:icon]) [iconsOut addObject:icon];
+                }
+            } @catch (NSException *e) { }
+        }
         if (TBApplyThemeToIconView(v)) fixed++;
     }
-    for (UIView *sub in v.subviews) fixed += TBHealViewTree(sub, depth + 1);
+    for (UIView *sub in v.subviews) fixed += TBHealViewTree(sub, depth + 1, iconsOut);
     return fixed;
 }
 
 /// 换主题后遍历窗口层级强制重贴（不依赖图标视图是否登记为缓存观察者）
+static NSInteger TBInvalidateIconViews(NSArray *icons);
+
 static void TBHealAllIconViews(void) {
     if (gHealDepth > 0) return;
     gHealDepth++;
     @try {
         NSInteger fixed = 0;
+        NSMutableArray *seenIcons = [NSMutableArray array];
         for (UIView *w in [[UIApplication sharedApplication] windows]) {
-            fixed += TBHealViewTree(w, 0);
+            fixed += TBHealViewTree(w, 0, seenIcons);
             if (fixed > 400) break;   // 上限保护
         }
         if (fixed > 0) TBLog(@"换主题后重贴 %ld 个图标视图", (long)fixed);
+        // 用遍历收集到的图标去通知缓存观察者（不依赖 SBIconModel）
+        if (seenIcons.count > 0 && seenIcons.count <= 250) {
+            NSInteger sent = TBInvalidateIconViews(seenIcons);
+            if (sent > 0) TBLog(@"通知图标视图重取 %ld 次（来源：视图遍历）", (long)sent);
+        }
     } @catch (NSException *e) { }
     gHealDepth--;
 }
