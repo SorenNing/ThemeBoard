@@ -192,6 +192,13 @@ static BOOL TBApplyEnabled(NSString *key) {
     id v = TBPref(key);
     return v ? [v boolValue] : YES;
 }
+
+/// 新增通道总开关（0.13.18 新增的高频 hook 默认关闭，避免 SpringBoard 主线程阻塞闪屏）
+static BOOL TBNewChannelsEnabled(void) {
+    id v = TBPref(@"NewChannels");
+    if (v) return [v boolValue];
+    return NO;   // 默认关闭（旧通道不受影响）
+}
 /// 程序坞 / 文件夹预览 / App 切换器共用系统图标缓存，三开关任一开即允许替换。
 static BOOL TBApplyIconForDesktop(void) {
     // 桌面图标：Dock、文件夹预览、App 切换器共用（打开任一即替换）
@@ -562,7 +569,7 @@ static IFImgFn o_ifImgDescriptor;
 static IFSizeFn o_ifImgSize;
 
 static id tb_ifImgDescriptor(id self, SEL _cmd, id descriptor) {
-    NSString *bid = TBBIDFromISIcon(self);
+    NSString *bid = TBNewChannelsEnabled() ? TBBIDFromISIcon(self) : nil;
     if (bid && TBUIKitIconEnabled()) {
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLog(@"serve IFImage.desc %@", bid); return img; }
@@ -571,7 +578,7 @@ static id tb_ifImgDescriptor(id self, SEL _cmd, id descriptor) {
 }
 
 static id tb_ifImgSize(id self, SEL _cmd, CGSize size, double scale) {
-    NSString *bid = TBBIDFromISIcon(self);
+    NSString *bid = TBNewChannelsEnabled() ? TBBIDFromISIcon(self) : nil;
     if (bid && TBUIKitIconEnabled()) {
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLog(@"serve IFImage.size %@", bid); return img; }
@@ -587,10 +594,9 @@ static SetImgFn o_setImageOnIconView;
 static ResetImgFn o_resetImageOnIconView;
 
 static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
-    // 先用主题图替换传入 image，再一次性调用原实现（避免递归 setImage:）
     id finalImage = image;
     BOOL replaced = NO;
-    if (TBApplyIconForDesktop()) {
+    if (TBNewChannelsEnabled() && TBApplyIconForDesktop()) {
         @try {
             id icon = nil;
             if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
@@ -671,7 +677,7 @@ static IconImageViewFn o_iconImageView, o_crossfadeImageView;
 static id tb_iconImageView(id self, SEL _cmd) {
     // 观察路径：只记录，不直接改图（setImage: 由 SBIconImageView hook 统一处理，避免递归）
     id v = o_iconImageView ? o_iconImageView(self, _cmd) : nil;
-    if (v && TBApplyIconForDesktop()) {
+    if (v && TBNewChannelsEnabled() && TBApplyIconForDesktop()) {
         @try {
             id icon = nil;
             if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
@@ -686,7 +692,7 @@ static id tb_iconImageView(id self, SEL _cmd) {
 
 static id tb_crossfadeImageView(id self, SEL _cmd) {
     id v = o_crossfadeImageView ? o_crossfadeImageView(self, _cmd) : nil;
-    if (v && TBApplyIconForDesktop()) {
+    if (v && TBNewChannelsEnabled() && TBApplyIconForDesktop()) {
         @try {
             id icon = nil;
             if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
