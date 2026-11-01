@@ -8,8 +8,9 @@ NSString *const TBKeyActiveTheme   = @"ActiveTheme";
 NSString *const TBKeyApplyDock     = @"ApplyDock";
 NSString *const TBKeyApplyFolder   = @"ApplyFolder";
 NSString *const TBKeyApplySwitcher = @"ApplySwitcher";
-NSString *const TBKeyApplySettings = @"ApplySettings";
-NSString *const TBKeyApplyShare    = @"ApplyShare";
+NSString *const TBKeyApplySettings  = @"ApplySettings";
+NSString *const TBKeyApplyShare     = @"ApplyShare";
+NSString *const TBKeyApplyNotification = @"ApplyNotification";
 NSString *const TBKeyLogEnabled    = @"LogEnabled";
 
 @implementation TBPrefs

@@ -748,9 +748,33 @@ static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
 
 typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
 static ImgNameFn o_imageNamed, o_imageWithFile;
+typedef UIImage *(*AppIconFn)(id, SEL, id, int);
+typedef UIImage *(*AppIconScaleFn)(id, SEL, id, int, double);
+static AppIconFn o_appIcon, o_appIconScale;
 
 static BOOL TBIsThemedResourceName(NSString *name);
 static NSString *TBBIDFromIcon(id icon);
+
+/// 设置页图标 / 通知中心 共用 UIKit 应用图标入口
+static BOOL TBUIKitIconEnabled(void) {
+    return TBApplyEnabled(@"ApplySettings") || TBApplyEnabled(@"ApplyNotification");
+}
+
+static UIImage *tb_appIconImageForBID(id self, SEL _cmd, id identifier, int format) {
+    if (TBUIKitIconEnabled() && [identifier isKindOfClass:[NSString class]] && [identifier length]) {
+        UIImage *img = TBImageForBundle(identifier);
+        if (img) { gServe++; TBLog(@"serve 应用图标 %@ fmt=%d", identifier, format); return img; }
+    }
+    return o_appIcon ? o_appIcon(self, _cmd, identifier, format) : nil;
+}
+
+static UIImage *tb_appIconImageForBIDScale(id self, SEL _cmd, id identifier, int format, double scale) {
+    if (TBUIKitIconEnabled() && [identifier isKindOfClass:[NSString class]] && [identifier length]) {
+        UIImage *img = TBImageForBundle(identifier);
+        if (img) { gServe++; TBLog(@"serve 应用图标 %@ fmt=%d scale=%.0f", identifier, format, scale); return img; }
+    }
+    return o_appIconScale ? o_appIconScale(self, _cmd, identifier, format, scale) : nil;
+}
 
 static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
     if (!TBIsThemedResourceName(name)) {
@@ -926,6 +950,10 @@ static void TBInstall(void) {
                                                  (IMP)tb_pathForRes, "NSBundle.pathForResource");
         o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
                                                        (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
+        o_appIcon = (AppIconFn)TBHookClass([UIImage class], @"_applicationIconImageForBundleIdentifier:format:",
+                                           (IMP)tb_appIconImageForBID, "应用图标");
+        o_appIconScale = (AppIconScaleFn)TBHookClass([UIImage class], @"_applicationIconImageForBundleIdentifier:format:scale:",
+                                                     (IMP)tb_appIconImageForBIDScale, "应用图标(scale)");
         gDoneImageHooks = (o_imageNamed != NULL);
     }
 

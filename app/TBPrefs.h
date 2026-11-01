@@ -11,6 +11,7 @@ extern NSString *const TBKeyApplyFolder;    // BOOL
 extern NSString *const TBKeyApplySwitcher;  // BOOL
 extern NSString *const TBKeyApplySettings;  // BOOL
 extern NSString *const TBKeyApplyShare;     // BOOL
+extern NSString *const TBKeyApplyNotification; // BOOL 通知中心
 extern NSString *const TBKeyLogEnabled;     // BOOL
 
 @interface TBPrefs : NSObject
