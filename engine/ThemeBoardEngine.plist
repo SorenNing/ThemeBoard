@@ -10,6 +10,10 @@
 			<string>iconservicesagent</string>
 			<string>Preferences</string>
 			<string>usernotificationsd</string>
+			<string>ShareUI</string>
+			<string>sharingd</string>
+			<string>AppPredictionWidget</string>
+			<string>Spotlight</string>
 		</array>
 		<key>Bundles</key>
 		<array>
