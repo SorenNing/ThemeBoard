@@ -20,6 +20,10 @@ typedef struct {
     double ratio;     // 8B
 } TBImageInfo;        // 32B，HFA(4×double)，走 d0-d3
 
+typedef id (*CalGenFn)(id, SEL, TBImageInfo);
+typedef id (*CalUnmaskedFn)(id, SEL, TBImageInfo);
+typedef id (*ProviderIconFn)(id, SEL, TBImageInfo);
+
 #pragma mark - 状态
 
 static NSString *gLogPath;
@@ -576,6 +580,94 @@ static id tb_ifImgSize(id self, SEL _cmd, CGSize size, double scale) {
 }
 
 // ---- SBIconView._iconImageView / SBIconImageCrossfadeView.iconImageView ----
+// ---- SBIconImageView / SBFolderIconImageView（SnowBoard 证据）----
+typedef void (*SetImgFn)(id, SEL, id);
+typedef void (*ResetImgFn)(id, SEL, id);
+static SetImgFn o_setImageOnIconView;
+static ResetImgFn o_resetImageOnIconView;
+
+static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
+    if (o_setImageOnIconView) o_setImageOnIconView(self, _cmd, image);
+    if (!TBApplyIconForDesktop()) return;
+    @try {
+        id icon = nil;
+        if ([self respondsToSelector:NSSelectorFromString(@"icon")]) {
+            icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
+        }
+        NSString *bid = TBBIDFromIcon(icon);
+        if (bid) {
+            UIImage *img = TBImageForBundle(bid);
+            if (img) {
+                ((void (*)(id, SEL, id))objc_msgSend)(self, NSSelectorFromString(@"setImage:"), img);
+                gServe++; TBLog(@"serve SBIconImageView.setImage %@", bid);
+            }
+        }
+    } @catch (NSException *e) { }
+}
+
+static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
+    if (o_resetImageOnIconView) o_resetImageOnIconView(self, _cmd, icon);
+    NSString *bid = TBBIDFromIcon(icon);
+    if (bid && TBApplyIconForDesktop()) {
+        UIImage *img = TBImageForBundle(bid);
+        if (img) {
+            @try {
+                if ([self respondsToSelector:NSSelectorFromString(@"setImage:")]) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(self, NSSelectorFromString(@"setImage:"), img);
+                    gServe++; TBLog(@"serve SBIconImageView.resetImage %@", bid);
+                }
+            } @catch (NSException *e) { }
+        }
+    }
+}
+
+// ---- SBCalendarApplicationIcon（另一个日历类，SnowBoard 证据）----
+static CalGenFn o_calGen2;
+static CalUnmaskedFn o_calUnmasked2;
+
+static id tb_calGen2(id self, SEL _cmd, TBImageInfo info) {
+    if (TBApplyIconForDesktop()) {
+        NSString *bid = TBBIDFromIcon(self);
+        UIImage *img = TBImageForBundle(bid);
+        if (img) { gServe++; TBLog(@"serve SBCalendarApplicationIcon.generate %@", bid); return img; }
+    }
+    return o_calGen2 ? o_calGen2(self, _cmd, info) : nil;
+}
+
+static id tb_calUnmasked2(id self, SEL _cmd, TBImageInfo info) {
+    if (TBApplyIconForDesktop()) {
+        NSString *bid = TBBIDFromIcon(self);
+        UIImage *img = TBImageForBundle(bid);
+        if (img) { gServe++; TBLog(@"serve SBCalendarApplicationIcon.unmasked %@", bid); return img; }
+    }
+    return o_calUnmasked2 ? o_calUnmasked2(self, _cmd, info) : nil;
+}
+
+// ---- SBCalendarIconImageProvider.iconImageWithInfo:（Mikkyy 证据）----
+typedef id (*ProviderIconFn)(id, SEL, TBImageInfo);
+static ProviderIconFn o_providerIcon;
+
+static id tb_providerIcon(id self, SEL _cmd, TBImageInfo info) {
+    if (TBApplyIconForDesktop()) {
+        UIImage *img = TBImageForBundle(@"com.apple.mobilecal");
+        if (img) { gServe++; TBLog(@"serve SBCalendarIconImageProvider"); return img; }
+    }
+    return o_providerIcon ? o_providerIcon(self, _cmd, info) : nil;
+}
+
+// ---- SBIcon.generateIconImage:（SnowBoard 证据）----
+typedef id (*GenImgOneFn)(id, SEL, id);
+static GenImgOneFn o_genImgOne;
+
+static id tb_genImgOne(id self, SEL _cmd, id image) {
+    if (TBApplyIconForDesktop()) {
+        NSString *bid = TBBIDFromIcon(self);
+        UIImage *img = TBImageForBundle(bid);
+        if (img) { gServe++; TBLog(@"serve SBIcon.generateIconImage %@", bid); return img; }
+    }
+    return o_genImgOne ? o_genImgOne(self, _cmd, image) : nil;
+}
+
 typedef id (*IconImageViewFn)(id, SEL);
 static IconImageViewFn o_iconImageView, o_crossfadeImageView;
 
@@ -701,8 +793,6 @@ static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
 }
 
 // ---- 日历专用：SBHCalendarApplicationIcon（MarkTheme 证据）----
-typedef id (*CalGenFn)(id, SEL, TBImageInfo);
-typedef id (*CalUnmaskedFn)(id, SEL, TBImageInfo);
 static CalGenFn o_calGen;
 static CalUnmaskedFn o_calUnmasked;
 
@@ -1394,6 +1484,39 @@ static void TBInstall(void) {
     if (cuik && TBHasMethod(cuik, @"iconImageWithDateComponents:calendar:format:size:scale:")) {
         o_cuikGen = (CUIKGenFn)TBHook(cuik, @"iconImageWithDateComponents:calendar:format:size:scale:",
                                       (IMP)tb_cuikGen, "CUIK日历");
+    }
+
+    // SBCalendarApplicationIcon（SnowBoard：另一个日历类）
+    Class calIcon2 = NSClassFromString(@"SBCalendarApplicationIcon");
+    if (calIcon2) {
+        if (TBHasMethod(calIcon2, @"generateIconImageWithInfo:")) {
+            o_calGen2 = (CalGenFn)TBHook(calIcon2, @"generateIconImageWithInfo:", (IMP)tb_calGen2, "日历2generateIcon");
+        }
+        if (TBHasMethod(calIcon2, @"unmaskedIconImageWithInfo:")) {
+            o_calUnmasked2 = (CalUnmaskedFn)TBHook(calIcon2, @"unmaskedIconImageWithInfo:", (IMP)tb_calUnmasked2, "日历2unmasked");
+        }
+    }
+
+    // SBCalendarIconImageProvider.iconImageWithInfo:（Mikkyy 证据）
+    Class calProvider = NSClassFromString(@"SBCalendarIconImageProvider");
+    if (calProvider && TBHasMethod(calProvider, @"iconImageWithInfo:")) {
+        o_providerIcon = (ProviderIconFn)TBHook(calProvider, @"iconImageWithInfo:", (IMP)tb_providerIcon, "日历Provider");
+    }
+
+    // SBIconImageView.setImage: / resetImageWithAppIcon:（SnowBoard）
+    Class iconImageViewCls = NSClassFromString(@"SBIconImageView");
+    if (iconImageViewCls) {
+        if (TBHasMethod(iconImageViewCls, @"setImage:")) {
+            o_setImageOnIconView = (SetImgFn)TBHook(iconImageViewCls, @"setImage:", (IMP)tb_setImageOnIconView, "SBIconImageView");
+        }
+        if (TBHasMethod(iconImageViewCls, @"resetImageWithAppIcon:")) {
+            o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "resetImageWithAppIcon");
+        }
+    }
+
+    // SBIcon.generateIconImage:（SnowBoard）
+    if (icon && TBHasMethod(icon, @"generateIconImage:")) {
+        o_genImgOne = (GenImgOneFn)TBHook(icon, @"generateIconImage:", (IMP)tb_genImgOne, "generateIconImage");
     }
 }
 
