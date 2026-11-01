@@ -750,7 +750,8 @@ typedef UIImage *(*ImgNameFn)(id, SEL, NSString *);
 static ImgNameFn o_imageNamed, o_imageWithFile;
 typedef UIImage *(*AppIconFn)(id, SEL, id, int);
 typedef UIImage *(*AppIconScaleFn)(id, SEL, id, int, double);
-static AppIconFn o_appIcon, o_appIconScale;
+static AppIconFn o_appIcon;
+static AppIconScaleFn o_appIconScale;
 
 static BOOL TBIsThemedResourceName(NSString *name);
 static NSString *TBBIDFromIcon(id icon);
