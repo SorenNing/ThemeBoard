@@ -162,7 +162,7 @@ static NSString *const kGridID = @"grid";
 }
 
 - (CGFloat)tableView:(UITableView *)t heightForRowAtIndexPath:(NSIndexPath *)ip {
-    return ip.section == 0 ? 244 : 88;
+    return ip.section == 0 ? 190 : 88;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -249,7 +249,7 @@ static NSString *const kGridID = @"grid";
 
             [btn.topAnchor constraintEqualToAnchor:summary.bottomAnchor constant:12],
             [btn.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
-            [btn.heightAnchor constraintEqualToConstant:64],
+            [btn.heightAnchor constraintEqualToConstant:44],
             [btn.widthAnchor constraintEqualToAnchor:exp.widthAnchor multiplier:3.0],
 
             [exp.topAnchor constraintEqualToAnchor:btn.topAnchor],
