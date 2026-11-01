@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <unistd.h>
+#import <ImageIO/ImageIO.h>
 
 static NSString *const kDomain = @"com.ning.themeboard";
 static NSString *const kNotify = @"com.ning.themeboard.changed";
@@ -476,12 +477,14 @@ typedef id (*FnIconOpt)(id, SEL, id, unsigned long long);
 typedef id (*FnImageForIcon)(id, SEL, id, id);
 typedef id (*FnGen)(id, SEL, TBImageInfo);
 typedef id (*FnGenSize)(id, SEL, CGSize, double, BOOL, id);
+typedef id (*FnISGeneration)(id, SEL, id *);
 
 static FnIcon o_imageForIcon, o_cachedForIcon, o_unmaskedForIcon;
 static FnIconOpt o_imageForIconOpt, o_realForIconOpt, o_unmaskedForIconOpt;
 static FnImageForIcon o_cacheImageForIcon;
 static FnGen o_generateIconImageWithInfo, o_genericIconImage;
 static FnGenSize o_iconImageOfSize;
+static FnISGeneration o_isGeneration;
 
 static id tb_imageForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
@@ -607,49 +610,175 @@ static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
     }
 }
 
-// ---- SBIconView._iconImageView（SnowBoard/MarkTheme 核心通道：桌面/资源库/Dock/切换器）----
-typedef id (*IconViewFn)(id, SEL);
-static IconViewFn o_iconImageView;
-static IconViewFn o_iconImageViewXfade;
+// ---- IconServices 生成阶段（拖拽/资源库重建后仍保持主题）----
+// 这里先让系统生成原始 IFImage，再仅替换其位图。不要在 SBIconView
+// getter 或 crossfade getter 中主动 setImage:，那些方法位于 SpringBoard
+// 初始化热路径，容易递归并触发 SpringBoard 重启。
+typedef id (*TBISGenerationFn)(id, SEL, id *);
+typedef id (*TBIFObjectFn)(id, SEL);
+typedef CGSize (*TBIFSizeFn)(id, SEL);
+typedef double (*TBIFDoubleFn)(id, SEL);
+typedef BOOL (*TBIFBoolFn)(id, SEL);
+typedef id (*TBIFCacheInitFn)(id, SEL, CGImageRef, double, CGSize, BOOL, CGSize);
+typedef id (*TBIFDataInitFn)(id, SEL, id, id, id);
+typedef void (*TBIFSetLargestFn)(id, SEL, BOOL);
 
-static id tb_iconImageView(id self, SEL _cmd) {
-    id v = o_iconImageView ? o_iconImageView(self, _cmd) : nil;
-    if (TBEnabled() && !TBSafeMode() && v) {
-        @try {
-            id icon = nil;
-            if ([self respondsToSelector:NSSelectorFromString(@"icon")])
-                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
-            NSString *bid = TBBIDFromIcon(icon);
-            if (bid) {
-                UIImage *img = TBImageForBundle(bid);
-                if (img && [v respondsToSelector:@selector(setImage:)]) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setImage:), img);
-                    gServe++; TBLog(@"serve SBIconView._iconImageView %@", bid);
-                }
-            }
-        } @catch (NSException *e) { }
-    }
-    return v;
+/// 主题里该 bundleID 的原图（用 ImageIO 读，不依赖 UIKit：iconservicesagent
+/// 里 UIKit 可能没有加载，走 UIImage 会静默拿到 nil）
+static CGImageRef TBCGImageForBundle(NSString *bid) {
+    if (!bid.length || !TBEnabled() || TBSafeMode()) return NULL;
+    [gLock lock];
+    TBLoadIndex();
+    NSString *path = gIndex[bid];
+    [gLock unlock];
+    if (!path.length) return NULL;
+    NSURL *url = [NSURL fileURLWithPath:path];
+    CGImageSourceRef src = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (!src) return NULL;
+    CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, NULL);
+    CFRelease(src);
+    return img;   // Create 规则：调用方负责释放
 }
 
-static id tb_iconImageViewXfade(id self, SEL _cmd) {
-    id v = o_iconImageViewXfade ? o_iconImageViewXfade(self, _cmd) : nil;
-    if (TBEnabled() && !TBSafeMode() && v) {
-        @try {
-            id icon = nil;
-            if ([self respondsToSelector:NSSelectorFromString(@"icon")])
-                icon = ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon"));
-            NSString *bid = TBBIDFromIcon(icon);
-            if (bid) {
-                UIImage *img = TBImageForBundle(bid);
-                if (img && [v respondsToSelector:@selector(setImage:)]) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(v, @selector(setImage:), img);
-                    gServe++; TBLog(@"serve SBIconImageCrossfadeView.iconImageView %@", bid);
-                }
-            }
-        } @catch (NSException *e) { }
+static BOOL TBIFReadGeometry(id image, CGSize *pixelSize, CGSize *minimumSize,
+                             CGSize *iconSize, double *scale, BOOL *placeholder,
+                             BOOL *largest) {
+    if (!image) return NO;
+    SEL pixelSel = NSSelectorFromString(@"pixelSize");
+    SEL minSel = NSSelectorFromString(@"minimumSize");
+    SEL iconSel = NSSelectorFromString(@"iconSize");
+    SEL scaleSel = NSSelectorFromString(@"scale");
+    SEL placeholderSel = NSSelectorFromString(@"placeholder");
+    SEL largestSel = NSSelectorFromString(@"largest");
+    if (![image respondsToSelector:pixelSel] || ![image respondsToSelector:minSel] ||
+        ![image respondsToSelector:iconSel] || ![image respondsToSelector:scaleSel] ||
+        ![image respondsToSelector:placeholderSel] || ![image respondsToSelector:largestSel]) return NO;
+    TBIFSizeFn sizeFn = (TBIFSizeFn)objc_msgSend;
+    TBIFDoubleFn doubleFn = (TBIFDoubleFn)objc_msgSend;
+    TBIFBoolFn boolFn = (TBIFBoolFn)objc_msgSend;
+    if (pixelSize) *pixelSize = sizeFn(image, pixelSel);
+    if (minimumSize) *minimumSize = sizeFn(image, minSel);
+    if (iconSize) *iconSize = sizeFn(image, iconSel);
+    if (scale) *scale = doubleFn(image, scaleSel);
+    if (placeholder) *placeholder = boolFn(image, placeholderSel);
+    if (largest) *largest = boolFn(image, largestSel);
+    return YES;
+}
+
+/// 用 CoreGraphics 把主题图重绘成系统要求的精确像素尺寸
+static CGImageRef TBRasterFromCGImage(CGImageRef src, CGSize pixelSize) {
+    if (!src) return NULL;
+    size_t w = (size_t)pixelSize.width;
+    size_t h = (size_t)pixelSize.height;
+    if (w < 1 || h < 1 || w > 1200 || h > 1200) return NULL;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) return NULL;
+    CGContextRef ctx = CGBitmapContextCreate(NULL, w, h, 8, 0, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return NULL;
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+    CGContextClearRect(ctx, CGRectMake(0, 0, w, h));
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), src);
+    CGImageRef out = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return out;   // Create 规则：调用方负责释放
+}
+
+/// 只接受系统图标生成器真正会产出、且尺寸自洽的几何参数
+static BOOL TBISGeometrySupported(CGSize pixelSize, CGSize minimumSize, CGSize iconSize,
+                                  double scale, BOOL placeholder) {
+    if (placeholder) return NO;
+    if (scale < 1 || scale > 3 || floor(scale) != scale) return NO;
+    if (pixelSize.width < 1 || pixelSize.width > 1200) return NO;
+    if (pixelSize.width != pixelSize.height || floor(pixelSize.width) != pixelSize.width) return NO;
+    if (minimumSize.width <= 0 || minimumSize.width != minimumSize.height) return NO;
+    if (iconSize.width < minimumSize.width || iconSize.width != iconSize.height) return NO;
+    if (fabs(iconSize.width * scale - pixelSize.width) > 0.001) return NO;
+    return YES;
+}
+
+static id TBCreateIFImageReplacement(id original, CGImageRef raster, CGSize minimumSize,
+                                     CGSize iconSize, double scale, BOOL placeholder, BOOL largest) {
+    if (!original || !raster) return nil;
+    Class cacheClass = NSClassFromString(@"IFCacheImage");
+    Class imageClass = NSClassFromString(@"IFImage");
+    SEL cacheSel = NSSelectorFromString(@"initWithCGImage:scale:minimumSize:placeholder:iconSize:");
+    SEL dataSel = NSSelectorFromString(@"initWithData:uuid:validationToken:");
+    if (!cacheClass || !imageClass || ![cacheClass instancesRespondToSelector:cacheSel] ||
+        ![imageClass instancesRespondToSelector:dataSel]) return nil;
+
+    TBIFCacheInitFn cacheInit = (TBIFCacheInitFn)objc_msgSend;
+    id cacheImage = cacheInit([cacheClass alloc], cacheSel, raster, scale, minimumSize, placeholder, iconSize);
+    if (!cacheImage) return nil;
+    SEL bitmapSel = NSSelectorFromString(@"bitmapData");
+    if (![cacheImage respondsToSelector:bitmapSel]) return nil;
+    id bitmapData = ((TBIFObjectFn)objc_msgSend)(cacheImage, bitmapSel);
+    id uuid = [original valueForKey:@"uuid"];
+    id validationToken = [original valueForKey:@"validationToken"];
+    if (!bitmapData || !uuid) return nil;
+    // 系统校验令牌固定 40 字节，长度不对说明 ABI 变了，直接放弃
+    if (![validationToken respondsToSelector:@selector(length)] ||
+        [(NSData *)validationToken length] != 40) return nil;
+
+    TBIFDataInitFn dataInit = (TBIFDataInitFn)objc_msgSend;
+    id replacement = dataInit([imageClass alloc], dataSel, bitmapData, uuid, validationToken);
+    if (!replacement) return nil;
+    SEL largestSel = NSSelectorFromString(@"setLargest:");
+    if ([replacement respondsToSelector:largestSel]) {
+        ((TBIFSetLargestFn)objc_msgSend)(replacement, largestSel, largest);
     }
-    return v;
+    return replacement;
+}
+
+static id tb_isGeneration(id self, SEL _cmd, id *recordIdentifiers) {
+    id original = o_isGeneration ? o_isGeneration(self, _cmd, recordIdentifiers) : nil;
+    if (!original || !TBEnabled() || TBSafeMode()) return original;
+    @try {
+        id icon = [self valueForKey:@"icon"];
+        NSString *bid = [icon valueForKey:@"bundleIdentifier"];
+        if (![bid isKindOfClass:[NSString class]] || bid.length == 0) return original;
+
+        CGSize pixelSize = CGSizeZero, minimumSize = CGSizeZero, iconSize = CGSizeZero;
+        double scale = 0;
+        BOOL placeholder = NO, largest = NO;
+        if (!TBIFReadGeometry(original, &pixelSize, &minimumSize, &iconSize, &scale, &placeholder, &largest) ||
+            !TBISGeometrySupported(pixelSize, minimumSize, iconSize, scale, placeholder)) return original;
+
+        // 日历/时钟每天要变，交给 SpringBoard 的专用钩子，这里保持原图
+        if ([bid isEqualToString:@"com.apple.mobilecal"] ||
+            [bid isEqualToString:@"com.apple.mobiletimer"]) return original;
+
+        // 只处理系统自带的 bundle 图标（digest 为 NSUUID），其余类一律放行
+        id digest = [original valueForKey:@"digest"];
+        if (![digest isKindOfClass:[NSUUID class]]) return original;
+
+        CGImageRef theme = TBCGImageForBundle(bid);
+        if (!theme) return original;
+        CGImageRef raster = TBRasterFromCGImage(theme, pixelSize);
+        CGImageRelease(theme);
+        if (!raster) return original;
+        if (CGImageGetWidth(raster) != (size_t)pixelSize.width ||
+            CGImageGetHeight(raster) != (size_t)pixelSize.height) {
+            CGImageRelease(raster);
+            return original;
+        }
+        id replacement = TBCreateIFImageReplacement(original, raster, minimumSize, iconSize,
+                                                    scale, placeholder, largest);
+        CGImageRelease(raster);
+        if (replacement) {
+            gServe++;
+            static int loggedGen = 0;
+            if (loggedGen < 12) {
+                loggedGen++;
+                TBLog(@"serve ISGeneration %@ %.0fx%.0f", bid, pixelSize.width, pixelSize.height);
+            }
+            return replacement;
+        }
+    } @catch (NSException *e) {
+        TBLog(@"ISGeneration fallback %@", e.reason ?: @"exception");
+    }
+    return original;
 }
 
 // ---- IFImage（IconServices 图标服务，快捷指令/资源库共用）----
@@ -1034,6 +1163,7 @@ static BOOL gDoneCache = NO;
 static BOOL gDoneClock = NO;
 static BOOL gDoneSpecifier = NO;
 static BOOL gDoneGen = NO;
+static BOOL gDoneISGeneration = NO;
 
 static void TBInstall(void) {
     // 检测 iOS 主版本
@@ -1167,15 +1297,18 @@ static void TBInstall(void) {
         o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "SBIconImageView.reset");
     }
 
-    // SBIconView._iconImageView（SnowBoard/MarkTheme 核心通道，拖拽放置重建走这里）
-    Class sbIconViewCls = NSClassFromString(@"SBIconView");
-    if (sbIconViewCls && TBHasMethod(sbIconViewCls, @"_iconImageView")) {
-        o_iconImageView = (IconViewFn)TBHook(sbIconViewCls, @"_iconImageView", (IMP)tb_iconImageView, "SBIconView._iconImageView");
-    }
-    // SBIconImageCrossfadeView.iconImageView（桌面动画过渡，MarkTheme 通道）
-    Class sbXfadeCls = NSClassFromString(@"SBIconImageCrossfadeView");
-    if (sbXfadeCls && TBHasMethod(sbXfadeCls, @"iconImageView")) {
-        o_iconImageViewXfade = (IconViewFn)TBHook(sbXfadeCls, @"iconImageView", (IMP)tb_iconImageViewXfade, "SBIconImageCrossfadeView.iconImageView");
+    // 暂不安装 _iconImageView / crossfade getter hook：iOS 17.2 的 getter
+    // 属于 SpringBoard 图标初始化热路径，hook 本身会造成闪屏重启。
+
+    // iconservicesagent 的最终生成通道：资源库拖拽/桌面重建会重新经过这里。
+    // 只在原实现返回后替换 IFImage，失败一律返回原图。
+    Class generation = NSClassFromString(@"ISGenerationRequest");
+    if (generation && !gDoneISGeneration &&
+        TBHasMethod(generation, @"generateImageReturningRecordIdentifiers:")) {
+        gDoneISGeneration = YES;
+        o_isGeneration = (FnISGeneration)TBHook(generation,
+            @"generateImageReturningRecordIdentifiers:",
+            (IMP)tb_isGeneration, "ISGenerationRequest 图标生成");
     }
 
     // IFImage（IconServices 通道）

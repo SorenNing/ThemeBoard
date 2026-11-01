@@ -17,7 +17,7 @@ ld64.lld -dylib -arch arm64e \
     -platform_version ios 15.0 16.5 \
     -undefined dynamic_lookup \
     -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
-    -framework Foundation -framework UIKit -framework CoreGraphics \
+    -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO \
     -o "$OUT/ThemeBoardEngine.dylib" "$OUT"/*.o
 
 python3 - "$OUT/ThemeBoardEngine.dylib" <<'PY'

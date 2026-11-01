@@ -54,7 +54,7 @@ if compgen -G "engine/*.m" > /dev/null; then
   done
   clang -target "arm64e-apple-ios$VERY" -isysroot "$SDK" -dynamiclib \
         -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
-        -framework Foundation -framework UIKit -framework CoreGraphics \
+        -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO \
         -undefined dynamic_lookup \
         -o "$OUT/engine/ThemeBoardEngine.dylib" "${EOBJS[@]}"
   codesign --force --sign - "$OUT/engine/ThemeBoardEngine.dylib"
