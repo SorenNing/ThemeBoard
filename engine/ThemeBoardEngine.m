@@ -958,17 +958,28 @@ static void TBInstall(void) {
     int iosVer = TBGetIOSVersion();
     Class cache = NSClassFromString(@"SBHIconImageCache");
     Class icon  = NSClassFromString(@"SBIcon");
+    Class isicon = NSClassFromString(@"ISIcon");
+    Class activity = NSClassFromString(@"UIActivity");
+    Class spec = NSClassFromString(@"PSSpecifier");
+    Class clockView = NSClassFromString(@"SBHClockApplicationIconImageView");
     if (gIsPrimary) {
-        TBLog(@"=== iOS 版本=%d 类状态: SBHIconImageCache=%@ SBIcon=%@ ===", iosVer, cache ? @"有" : @"无", icon ? @"有" : @"无");
+        TBLog(@"=== iOS 版本=%d 类状态: SBHIconImageCache=%@ SBIcon=%@ ISIcon=%@ UIActivity=%@ PSSpecifier=%@ ClockView=%@ ===",
+              iosVer,
+              cache ? @"有" : @"无",
+              icon ? @"有" : @"无",
+              isicon ? @"有" : @"无",
+              activity ? @"有" : @"无",
+              spec ? @"有" : @"无",
+              clockView ? @"有" : @"无");
     }
 
-    // 只替换主题里确实存在的同名资源，其它一概放行
+    // UIImage / NSBundle 资源钩子（跨版本稳定）
     if (!gDoneImageHooks) {
         o_imageNamed = (ImgNameFn)TBHookClass([UIImage class], @"imageNamed:",
                                               (IMP)tb_imageNamed, "UIImage.imageNamed");
         o_imageWithFile = (ImgNameFn)TBHookClass([UIImage class], @"imageWithContentsOfFile:",
                                                  (IMP)tb_imageWithFile, "UIImage.imageWithContentsOfFile");
-        o_pathForRes = (BundlePathFn)TBHook([NSBundle class], @"pathForResource:ofType:",
+        o_pathForRes = (BundlePathFn)TBHookClass([NSBundle class], @"pathForResource:ofType:",
                                                  (IMP)tb_pathForRes, "NSBundle.pathForResource");
         o_pathForResDir = (BundlePathDirFn)TBHookClass([NSBundle class], @"pathForResource:ofType:inDirectory:",
                                                        (IMP)tb_pathForResDir, "NSBundle.pathForResource:inDirectory");
@@ -976,43 +987,63 @@ static void TBInstall(void) {
                                            (IMP)tb_appIconImageForBID, "应用图标");
         o_appIconScale = (AppIconScaleFn)TBHookClass([UIImage class], @"_applicationIconImageForBundleIdentifier:format:scale:",
                                                      (IMP)tb_appIconImageForBIDScale, "应用图标(scale)");
-        gDoneImageHooks = (o_imageNamed != NULL);
+        gDoneImageHooks = YES;
     }
 
-    Class isicon = NSClassFromString(@"ISIcon");
+    // ISIcon（运行时检测）
     if (isicon && !gDoneISIcon) {
-        o_isiconCG  = (ISIconCGFn)TBHook(isicon, @"CGImageForImageDescriptor:", (IMP)tb_isicon_cg, "ISIcon取图");
-        o_isiconCG2 = (ISIconCGFn)TBHook(isicon, @"CGImageForDescriptor:", (IMP)tb_isicon_cg2, "ISIcon取图2");
-        o_isiconImg  = (ISIconImgFn)TBHook(isicon, @"imageForImageDescriptor:", (IMP)tb_isicon_image, "ISIcon图像");
-        o_isiconImg2 = (ISIconImgFn)TBHook(isicon, @"imageForDescriptor:", (IMP)tb_isicon_image2, "ISIcon图像2");
         gDoneISIcon = YES;
+        if (TBHasMethod(isicon, @"CGImageForImageDescriptor:")) {
+            o_isiconCG = (ISIconCGFn)TBHook(isicon, @"CGImageForImageDescriptor:", (IMP)tb_isicon_cg, "ISIcon 取图");
+        }
+        if (TBHasMethod(isicon, @"CGImageForDescriptor:")) {
+            o_isiconCG2 = (ISIconCGFn)TBHook(isicon, @"CGImageForDescriptor:", (IMP)tb_isicon_cg2, "ISIcon 取图 2");
+        }
+        if (TBHasMethod(isicon, @"imageForImageDescriptor:")) {
+            o_isiconImg = (ISIconImgFn)TBHook(isicon, @"imageForImageDescriptor:", (IMP)tb_isicon_image, "ISIcon 图像");
+        }
+        if (TBHasMethod(isicon, @"imageForDescriptor:")) {
+            o_isiconImg2 = (ISIconImgFn)TBHook(isicon, @"imageForDescriptor:", (IMP)tb_isicon_image2, "ISIcon 图像 2");
+        }
     }
 
-    Class clockView = NSClassFromString(@"SBHClockApplicationIconImageView");
+    // 桌面时钟图标（运行时检测）
     if (clockView && !gDoneClock) {
         gDoneClock = YES;
-        o_clockIconImage = (ClockIconImageFn)TBHookClass(clockView, @"iconImageWithImageInfo:includingMask:",
-                                                         (IMP)tb_clockIconImage, "桌面时钟图标");
-        o_clockHandLayer[0] = (ClockLayerFn)TBHookClass(clockView, @"makeHoursHandLayerWithImageSet:",
-                                                        (IMP)tb_clockHandLayer, "时钟时针层");
-        o_clockHandLayer[1] = (ClockLayerFn)TBHookClass(clockView, @"makeMinutesHandLayerWithImageSet:",
-                                                        (IMP)tb_clockHandLayer, "时钟分针层");
-        o_clockHandLayer[2] = (ClockLayerFn)TBHookClass(clockView, @"makeSecondsHandLayerWithImageSet:",
-                                                        (IMP)tb_clockHandLayer, "时钟秒针层");
+        if (TBHasMethod(clockView, @"iconImageWithImageInfo:includingMask:")) {
+            o_clockIconImage = (ClockIconImageFn)TBHookClass(clockView, @"iconImageWithImageInfo:includingMask:",
+                                                             (IMP)tb_clockIconImage, "桌面时钟图标");
+        }
+        if (TBHasMethod(clockView, @"makeHoursHandLayerWithImageSet:")) {
+            o_clockHandLayer[0] = (ClockLayerFn)TBHookClass(clockView, @"makeHoursHandLayerWithImageSet:",
+                                                            (IMP)tb_clockHandLayer, "时钟时针层");
+        }
+        if (TBHasMethod(clockView, @"makeMinutesHandLayerWithImageSet:")) {
+            o_clockHandLayer[1] = (ClockLayerFn)TBHookClass(clockView, @"makeMinutesHandLayerWithImageSet:",
+                                                            (IMP)tb_clockHandLayer, "时钟分针层");
+        }
+        if (TBHasMethod(clockView, @"makeSecondsHandLayerWithImageSet:")) {
+            o_clockHandLayer[2] = (ClockLayerFn)TBHookClass(clockView, @"makeSecondsHandLayerWithImageSet:",
+                                                            (IMP)tb_clockHandLayer, "时钟秒针层");
+        }
     }
 
-    Class spec = NSClassFromString(@"PSSpecifier");
+    // PSSpecifier 设置页图标（运行时检测）
     if (spec && !gDoneSpecifier) {
         gDoneSpecifier = YES;
-        o_setupIconBundle = (SetupIconFn)TBHook(spec, @"setupIconImageWithBundle:",
-                                                (IMP)tb_setupIconWithBundle, "PSSpecifier设置页图标");
+        if (TBHasMethod(spec, @"setupIconImageWithBundle:")) {
+            o_setupIconBundle = (SetupIconFn)TBHook(spec, @"setupIconImageWithBundle:",
+                                                    (IMP)tb_setupIconWithBundle, "PSSpecifier 设置页图标");
+        }
     }
 
-    Class activity = NSClassFromString(@"UIActivity");
+    // UIActivity 分享面板图标（运行时检测）
     if (activity && !gDoneActivity) {
-        o_activityIcon = (UIActivityIconFn)TBHookClass(activity,
-            @"_activityImageForApplicationBundleIdentifier:", (IMP)tb_activityImageForBID, "UIActivity图标");
         gDoneActivity = YES;
+        if (TBHasMethod(activity, @"_activityImageForApplicationBundleIdentifier:")) {
+            o_activityIcon = (UIActivityIconFn)TBHookClass(activity,
+                @"_activityImageForApplicationBundleIdentifier:", (IMP)tb_activityImageForBID, "UIActivity 图标");
+        }
     }
 
     // SBHIconImageCache 主通道（所有版本的核心缓存接口）
@@ -1038,12 +1069,13 @@ static void TBInstall(void) {
         if (iosVer >= 17 && TBHasMethod(cache, @"unmaskedImageForIcon:options:")) {
             o_unmaskedForIconOpt = (FnIconOpt)TBHook(cache, @"unmaskedImageForIcon:options:", (IMP)tb_unmaskedForIconOpt, "unmaskedImageForIcon:options");
         }
+        // cacheImage:forIcon: 所有版本都存在
         if (TBHasMethod(cache, @"cacheImage:forIcon:")) {
             o_cacheImageForIcon = (FnImageForIcon)TBHook(cache, @"cacheImage:forIcon:", (IMP)tb_cacheImageForIcon, "cacheImage:forIcon");
         }
     }
+
     // generateIconImageWithInfo: 仅在 iOS 17.x 上启用（唯一已验证版本）
-    // 16.x/18.x/26.x 跳过，因为结构体参数 TBImageInfo 可能变化
     if (icon && !gDoneGen) {
         gDoneGen = YES;
         if (iosVer == 17 && TBHasMethod(icon, @"generateIconImageWithInfo:")) {
@@ -1053,7 +1085,6 @@ static void TBInstall(void) {
     }
 }
 
-#pragma mark - 刷新
 
 /// 让 SpringBoard 自己重绘桌面图标（不注销）
 static void TBRefreshSpringBoard(void) {
