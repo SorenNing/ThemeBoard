@@ -1232,6 +1232,8 @@ static BOOL gDoneClock = NO;
 static BOOL gDoneSpecifier = NO;
 static BOOL gDoneGen = NO;
 static BOOL gDoneISGeneration = NO;
+static BOOL gDoneIconImageView = NO;
+static BOOL gDoneIFImage = NO;
 
 static void TBInstall(void) {
     // 检测 iOS 主版本
@@ -1357,12 +1359,15 @@ static void TBInstall(void) {
 
     // SBIconImageView.setImage:（安全版，SnowBoard 通道）
     Class iconImageViewCls = NSClassFromString(@"SBIconImageView");
-    if (iconImageViewCls && TBHasMethod(iconImageViewCls, @"setImage:")) {
-        o_setImageOnIconView = (SetImgFn)TBHook(iconImageViewCls, @"setImage:", (IMP)tb_setImageOnIconView, "SBIconImageView");
-    }
-    // SBIconImageView.resetImageWithAppIcon:（拖拽放置/状态重建通道）
-    if (iconImageViewCls && TBHasMethod(iconImageViewCls, @"resetImageWithAppIcon:")) {
-        o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "SBIconImageView.reset");
+    if (iconImageViewCls && !gDoneIconImageView) {
+        gDoneIconImageView = YES;
+        if (TBHasMethod(iconImageViewCls, @"setImage:")) {
+            o_setImageOnIconView = (SetImgFn)TBHook(iconImageViewCls, @"setImage:", (IMP)tb_setImageOnIconView, "SBIconImageView");
+        }
+        // SBIconImageView.resetImageWithAppIcon:（拖拽放置/状态重建通道）
+        if (TBHasMethod(iconImageViewCls, @"resetImageWithAppIcon:")) {
+            o_resetImageOnIconView = (ResetImgFn)TBHook(iconImageViewCls, @"resetImageWithAppIcon:", (IMP)tb_resetImageOnIconView, "SBIconImageView.reset");
+        }
     }
 
     // 暂不安装 _iconImageView / crossfade getter hook：iOS 17.2 的 getter
@@ -1387,13 +1392,24 @@ static void TBInstall(void) {
 
     // IFImage（IconServices 通道）
     Class ifImage = NSClassFromString(@"IFImage");
-    if (ifImage) {
+    if (ifImage && !gDoneIFImage) {
+        gDoneIFImage = YES;
         if (TBHasMethod(ifImage, @"imageForDescriptor:")) {
             o_ifImgDescriptor = (IFImgFn)TBHook(ifImage, @"imageForDescriptor:", (IMP)tb_ifImgDescriptor, "IFImage.desc");
         }
         if (TBHasMethod(ifImage, @"imageForSize:scale:")) {
             o_ifImgSize = (IFSizeFn)TBHook(ifImage, @"imageForSize:scale:", (IMP)tb_ifImgSize, "IFImage.size");
         }
+    }
+
+    // 一次性自检：确认关键 hook 都已就位（每个进程只打一行）
+    static BOOL loggedState = NO;
+    if (!loggedState) {
+        loggedState = YES;
+        TBLog(@"hookstate cache=%d gen=%d genImg=%d ifimg=%d sbiv=%d",
+              o_imageForIcon != NULL, o_isGeneration != NULL,
+              o_isGenerateImage != NULL, o_ifImgSize != NULL,
+              o_setImageOnIconView != NULL);
     }
 
     // generateIconImageWithInfo: 仅在 iOS 17.x 上启用（唯一已验证版本）
