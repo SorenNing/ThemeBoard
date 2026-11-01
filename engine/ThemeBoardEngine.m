@@ -700,10 +700,55 @@ static LayoutFn o_iconViewLayout;
 static char kTBAppliedImageKey;
 static int gHealDepth = 0;
 
+/// 在子视图里找第一个能 setImage: 的 UIImageView（用于 App 资源库的 pod 视图）
+static UIView *TBFindImageViewIn(UIView *root, NSInteger depth) {
+    if (!root || depth > 4) return nil;
+    if ([root isKindOfClass:NSClassFromString(@"UIImageView")] &&
+        [root respondsToSelector:NSSelectorFromString(@"setImage:")]) return root;
+    for (UIView *sub in root.subviews) {
+        UIView *hit = TBFindImageViewIn(sub, depth + 1);
+        if (hit) return hit;
+    }
+    return nil;
+}
+
+/// 取某个图标视图里真正承载图片的视图：
+/// 普通图标走 _iconImageView；资源库 pod / 自定义视图走 _customIconImageViewController
+static id TBImageViewForIconView(id view) {
+    if (!view) return nil;
+    @try {
+        SEL ivSel = NSSelectorFromString(@"_iconImageView");
+        if ([view respondsToSelector:ivSel]) {
+            id iv = ((id (*)(id, SEL))objc_msgSend)(view, ivSel);
+            if (iv && [iv respondsToSelector:NSSelectorFromString(@"setImage:")]) return iv;
+        }
+    } @catch (NSException *e) { }
+    @try {
+        SEL vcSel = NSSelectorFromString(@"_customIconImageViewController");
+        if ([view respondsToSelector:vcSel]) {
+            id vc = ((id (*)(id, SEL))objc_msgSend)(view, vcSel);
+            if (vc) {
+                SEL imgSel = NSSelectorFromString(@"imageView");
+                if ([vc respondsToSelector:imgSel]) {
+                    id c = ((id (*)(id, SEL))objc_msgSend)(vc, imgSel);
+                    if (c && [c respondsToSelector:NSSelectorFromString(@"setImage:")]) return c;
+                }
+                SEL vSel = NSSelectorFromString(@"view");
+                if ([vc respondsToSelector:vSel]) {
+                    UIView *vv = ((id (*)(id, SEL))objc_msgSend)(vc, vSel);
+                    UIView *hit = TBFindImageViewIn(vv, 0);
+                    if (hit) return hit;
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    return nil;
+}
+
 static BOOL TBApplyThemeToIconView(id self) {
     if (!self) return NO;
     @try {
-        id iv = [self valueForKey:@"_iconImageView"];
+        id iv = TBImageViewForIconView(self);
         if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"image")] ||
             ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) {
             TBLogOnce([@"skip-iv|" stringByAppendingString:NSStringFromClass([self class])],
@@ -746,7 +791,8 @@ static BOOL TBApplyThemeToIconView(id self) {
 static NSInteger TBHealViewTree(UIView *v, NSInteger depth) {
     if (!v || depth > 12) return 0;
     NSInteger fixed = 0;
-    if ([v respondsToSelector:NSSelectorFromString(@"_iconImageView")]) {
+    if ([v respondsToSelector:NSSelectorFromString(@"icon")] ||
+        [v respondsToSelector:NSSelectorFromString(@"_iconImageView")]) {
         if (TBApplyThemeToIconView(v)) fixed++;
     }
     for (UIView *sub in v.subviews) fixed += TBHealViewTree(sub, depth + 1);
@@ -1648,15 +1694,36 @@ static void TBRefreshSpringBoard(void) {
 static NSArray *TBAllIcons(void) {
     @try {
         Class sc = NSClassFromString(@"SBIconController");
-        if (sc) {
-            id ctrl = ((id (*)(id, SEL))objc_msgSend)(sc, NSSelectorFromString(@"sharedInstance"));
-            id mgr = [ctrl valueForKey:@"iconManager"];
-            id model = [mgr valueForKey:@"iconModel"];
-            id leaf = [model valueForKey:@"leafIcons"];
-            if ([leaf isKindOfClass:[NSArray class]] && [leaf count]) return leaf;
-            id all = [model valueForKey:@"icons"];
-            if ([all isKindOfClass:[NSArray class]] && [all count]) return all;
+        if (!sc) return @[];
+        id ctrl = ((id (*)(id, SEL))objc_msgSend)(sc, NSSelectorFromString(@"sharedInstance"));
+        if (!ctrl) return @[];
+
+        // 17.2 的 SBIconModel 不支持 leafIcons 的 KVC，改成按方法探测
+        id model = nil;
+        SEL modelSel = NSSelectorFromString(@"iconModel");
+        if ([ctrl respondsToSelector:modelSel]) {
+            model = ((id (*)(id, SEL))objc_msgSend)(ctrl, modelSel);
         }
+        if (!model) {
+            id mgr = [ctrl valueForKey:@"iconManager"];
+            if ([mgr respondsToSelector:modelSel]) {
+                model = ((id (*)(id, SEL))objc_msgSend)(mgr, modelSel);
+            }
+        }
+        if (!model) return @[];
+
+        NSArray *candidates = @[@"leafIcons", @"icons", @"allIcons", @"visibleIcons", @"leafIconsInIconList"];
+        for (NSString *selName in candidates) {
+            SEL sel = NSSelectorFromString(selName);
+            if (![model respondsToSelector:sel]) continue;
+            id arr = ((id (*)(id, SEL))objc_msgSend)(model, sel);
+            if ([arr isKindOfClass:[NSArray class]] && [(NSArray *)arr count]) {
+                TBLogOnce([@"iconslist|" stringByAppendingString:selName],
+                          @"图标列表来源 %@ 共 %lu 个", selName, (unsigned long)[(NSArray *)arr count]);
+                return arr;
+            }
+        }
+        TBLogOnce(@"iconslist|none", @"图标列表：候选选择器全部为空");
     } @catch (NSException *e) {
         TBLog(@"取图标列表失败: %@", e.reason);
     }
