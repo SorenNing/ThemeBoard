@@ -447,18 +447,64 @@ static UIImage *TBImageForBundle(NSString *bid) {
 
 #pragma mark - 取 bundleID
 
+/// 反 DNS 形式（至少含一个点）才算可用的 bundleID；UUID 之类一律视为不可用
+static BOOL TBBIDLooksUsable(NSString *s) {
+    if (![s isKindOfClass:[NSString class]] || s.length < 3) return NO;
+    return [s rangeOfString:@"."].location != NSNotFound;
+}
+
+/// 把图标对象上所有可能带身份的字段摊平，便于定位「UUID 图标」到底是什么
+static NSString *TBBIDDumpIcon(id icon) {
+    NSMutableArray *pairs = [NSMutableArray array];
+    NSArray *keys = @[@"leafIdentifier", @"applicationBundleID", @"applicationBundleIdentifier",
+                      @"bundleIdentifier", @"uniqueIdentifier", @"iconIdentifier", @"displayName"];
+    for (NSString *k in keys) {
+        @try {
+            if (![icon respondsToSelector:NSSelectorFromString(k)]) continue;
+            id v = ((id (*)(id, SEL))objc_msgSend)(icon, NSSelectorFromString(k));
+            if ([v isKindOfClass:[NSString class]] && [v length]) {
+                [pairs addObject:[NSString stringWithFormat:@"%@=%@", k, v]];
+            }
+        } @catch (NSException *e) { }
+    }
+    @try {
+        SEL appSel = NSSelectorFromString(@"application");
+        if ([icon respondsToSelector:appSel]) {
+            id app = ((id (*)(id, SEL))objc_msgSend)(icon, appSel);
+            for (NSString *k in @[@"bundleIdentifier", @"applicationIdentifier"]) {
+                if ([app respondsToSelector:NSSelectorFromString(k)]) {
+                    id v = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(k));
+                    if ([v isKindOfClass:[NSString class]] && [v length]) {
+                        [pairs addObject:[NSString stringWithFormat:@"app.%@=%@", k, v]];
+                    }
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    return [pairs componentsJoinedByString:@" "];
+}
+
 static NSString *TBBIDFromIcon(id icon) {
     if (!icon) return nil;
     static NSArray *paths = nil;
-    if (!paths) paths = @[@"leafIdentifier", @"applicationBundleID", @"bundleIdentifier"];
+    if (!paths) paths = @[@"applicationBundleID", @"bundleIdentifier",
+                          @"applicationBundleIdentifier", @"leafIdentifier"];
+    NSString *fallback = nil;
     for (NSString *k in paths) {
         @try {
             if (![icon respondsToSelector:NSSelectorFromString(k)]) continue;
             id v = [icon valueForKey:k];
-            if ([v isKindOfClass:[NSString class]] && [v length]) return v;
+            if (![v isKindOfClass:[NSString class]] || ![(NSString *)v length]) continue;
+            if (TBBIDLooksUsable(v)) return v;
+            if (!fallback) fallback = v;
         } @catch (NSException *e) {}
     }
-    return nil;
+    if (fallback.length) {
+        NSString *cls = NSStringFromClass([icon class]);
+        TBLogOnce([@"biddump|" stringByAppendingString:cls],
+                  @"biddump cls=%@ %@", cls, TBBIDDumpIcon(icon));
+    }
+    return fallback;
 }
 
 #pragma mark - hook 工具
@@ -659,13 +705,21 @@ static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
     @try {
         id iv = [self valueForKey:@"_iconImageView"];
         if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"image")] ||
-            ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) return;
+            ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) {
+            TBLogOnce([@"skip-iv|" stringByAppendingString:NSStringFromClass([self class])],
+                      @"skip-iv cls=%@", NSStringFromClass([self class]));
+            return;
+        }
         SEL iconSel = NSSelectorFromString(@"icon");
         id icon = [self respondsToSelector:iconSel] ?
             ((id (*)(id, SEL))objc_msgSend)(self, iconSel) : nil;
         NSString *bid = TBBIDFromIcon(icon);
         UIImage *theme = TBImageForBundle(bid);
-        if (!theme) return;
+        if (!theme) {
+            TBLogOnce([@"skip-theme|" stringByAppendingString:bid ?: @"(nil)"],
+                      @"skip-theme cls=%@ bid=%@", NSStringFromClass([self class]), bid ?: @"(nil)");
+            return;
+        }
         CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(iv, NSSelectorFromString(@"bounds"));
         UIImage *want = theme;
         if (b.size.width > 1 && b.size.height > 1 &&
