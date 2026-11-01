@@ -75,6 +75,9 @@ static const char *TBLogFilePath(void) {
     const char *cands[] = {
         "/var/mobile/Library/ThemeBoard/engine.log",
         "/var/jb/var/mobile/Library/ThemeBoard/engine.log",
+        // 守护进程（如 iconservicesagent）可能没有 /var/mobile 写权限，退到 /tmp
+        "/tmp/themeboard-engine.log",
+        "/var/tmp/themeboard-engine.log",
         NULL
     };
     for (int i = 0; cands[i]; i++) {
@@ -137,7 +140,7 @@ static void TBLog(NSString *fmt, ...) {
 
     // 所有进程都写，但每进程限量 60 行（用于观察 Preferences / iconservicesagent 等进程的行为）
     static int sPerProcLines = 0;
-    if (sPerProcLines >= 60) return;
+    if (sPerProcLines >= 400) return;
     sPerProcLines++;
     const char *lp = TBLogFilePath();
     if (!lp) return;
@@ -485,6 +488,8 @@ static FnImageForIcon o_cacheImageForIcon;
 static FnGen o_generateIconImageWithInfo, o_genericIconImage;
 static FnGenSize o_iconImageOfSize;
 static FnISGeneration o_isGeneration;
+typedef id (*FnISGenerateImage)(id, SEL);
+static FnISGenerateImage o_isGenerateImage;
 
 static id tb_imageForIcon(id self, SEL _cmd, id icon) {
     TBRemember(self);
@@ -550,6 +555,16 @@ static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long o
 /// 缓存落盘的那一刻换掉图 —— 这样所有后续消费者（含变体缓存）拿到的都是主题图
 static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
     TBRemember(self);
+    static int loggedCache = 0;
+    if (loggedCache < 40) {
+        loggedCache++;
+        NSString *sz = @"-";
+        if ([image isKindOfClass:[UIImage class]]) {
+            sz = [NSString stringWithFormat:@"%.0fx%.0f", ((UIImage *)image).size.width, ((UIImage *)image).size.height];
+        }
+        TBLog(@"api=cacheImage bid=%@ cls=%@ img=%@", TBBIDFromIcon(icon) ?: @"(nil)",
+              NSStringFromClass(object_getClass(image)), sz);
+    }
     return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, image, icon) : nil;
 }
 
@@ -731,54 +746,99 @@ static id TBCreateIFImageReplacement(id original, CGImageRef raster, CGSize mini
     return replacement;
 }
 
-static id tb_isGeneration(id self, SEL _cmd, id *recordIdentifiers) {
-    id original = o_isGeneration ? o_isGeneration(self, _cmd, recordIdentifiers) : nil;
-    if (!original || !TBEnabled() || TBSafeMode()) return original;
+// 生成链统一替换入口。返回 original 表示未替换；reason 为失败原因码：
+// 0 成功 / 1 无 bundleID / 2 几何不符 / 3 动态图标 / 4 非 bundle 图标 /
+// 5 主题无图 / 6 重绘失败 / 7 像素尺寸不符 / 8 IFImage 重建失败 / 99 异常
+static id TBReplaceGeneratedImage(id self, id original, int *reasonOut) {
+    if (reasonOut) *reasonOut = 0;
+    if (!original) return nil;
     @try {
         id icon = [self valueForKey:@"icon"];
         NSString *bid = [icon valueForKey:@"bundleIdentifier"];
-        if (![bid isKindOfClass:[NSString class]] || bid.length == 0) return original;
-
+        if (![bid isKindOfClass:[NSString class]] || bid.length == 0) {
+            if (reasonOut) *reasonOut = 1;
+            return original;
+        }
         CGSize pixelSize = CGSizeZero, minimumSize = CGSizeZero, iconSize = CGSizeZero;
         double scale = 0;
         BOOL placeholder = NO, largest = NO;
         if (!TBIFReadGeometry(original, &pixelSize, &minimumSize, &iconSize, &scale, &placeholder, &largest) ||
-            !TBISGeometrySupported(pixelSize, minimumSize, iconSize, scale, placeholder)) return original;
-
+            !TBISGeometrySupported(pixelSize, minimumSize, iconSize, scale, placeholder)) {
+            if (reasonOut) *reasonOut = 2;
+            return original;
+        }
         // 日历/时钟每天要变，交给 SpringBoard 的专用钩子，这里保持原图
         if ([bid isEqualToString:@"com.apple.mobilecal"] ||
-            [bid isEqualToString:@"com.apple.mobiletimer"]) return original;
-
+            [bid isEqualToString:@"com.apple.mobiletimer"]) {
+            if (reasonOut) *reasonOut = 3;
+            return original;
+        }
         // 只处理系统自带的 bundle 图标（digest 为 NSUUID），其余类一律放行
         id digest = [original valueForKey:@"digest"];
-        if (![digest isKindOfClass:[NSUUID class]]) return original;
-
+        if (![digest isKindOfClass:[NSUUID class]]) {
+            if (reasonOut) *reasonOut = 4;
+            return original;
+        }
         CGImageRef theme = TBCGImageForBundle(bid);
-        if (!theme) return original;
+        if (!theme) {
+            if (reasonOut) *reasonOut = 5;
+            return original;
+        }
         CGImageRef raster = TBRasterFromCGImage(theme, pixelSize);
         CGImageRelease(theme);
-        if (!raster) return original;
+        if (!raster) {
+            if (reasonOut) *reasonOut = 6;
+            return original;
+        }
         if (CGImageGetWidth(raster) != (size_t)pixelSize.width ||
             CGImageGetHeight(raster) != (size_t)pixelSize.height) {
             CGImageRelease(raster);
+            if (reasonOut) *reasonOut = 7;
             return original;
         }
         id replacement = TBCreateIFImageReplacement(original, raster, minimumSize, iconSize,
                                                     scale, placeholder, largest);
         CGImageRelease(raster);
-        if (replacement) {
-            gServe++;
-            static int loggedGen = 0;
-            if (loggedGen < 12) {
-                loggedGen++;
-                TBLog(@"serve ISGeneration %@ %.0fx%.0f", bid, pixelSize.width, pixelSize.height);
-            }
-            return replacement;
+        if (!replacement) {
+            if (reasonOut) *reasonOut = 8;
+            return original;
         }
+        return replacement;
     } @catch (NSException *e) {
-        TBLog(@"ISGeneration fallback %@", e.reason ?: @"exception");
+        if (reasonOut) *reasonOut = 99;
+        return original;
     }
-    return original;
+}
+
+static void TBLogGenerationResult(id request, id original, id result, int reason, const char *api) {
+    static int logged = 0;
+    if (logged >= 24) return;
+    logged++;
+    NSString *bid = nil;
+    @try {
+        bid = [[request valueForKey:@"icon"] valueForKey:@"bundleIdentifier"];
+    } @catch (NSException *e) { }
+    TBLog(@"gen %s ret=%d r=%d bid=%@", api, result != original, reason, bid ?: @"(nil)");
+}
+
+static id tb_isGeneration(id self, SEL _cmd, id *recordIdentifiers) {
+    id original = o_isGeneration ? o_isGeneration(self, _cmd, recordIdentifiers) : nil;
+    if (!original || !TBEnabled() || TBSafeMode()) return original;
+    int reason = 0;
+    id out = TBReplaceGeneratedImage(self, original, &reason);
+    if (out != original) gServe++;
+    TBLogGenerationResult(self, original, out, reason, "returningRecordIdentifiers");
+    return out;
+}
+
+static id tb_isGenerateImage(id self, SEL _cmd) {
+    id original = o_isGenerateImage ? o_isGenerateImage(self, _cmd) : nil;
+    if (!original || !TBEnabled() || TBSafeMode()) return original;
+    int reason = 0;
+    id out = TBReplaceGeneratedImage(self, original, &reason);
+    if (out != original) gServe++;
+    TBLogGenerationResult(self, original, out, reason, "generateImage");
+    return out;
 }
 
 // ---- IFImage（IconServices 图标服务，快捷指令/资源库共用）----
@@ -888,6 +948,8 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 }
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
+    static int loggedIcon0 = 0;
+    if (loggedIcon0 < 20) { loggedIcon0++; TBLog(@"api=ISIcon.cg1 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     if (!TBApplyEnabled(@"ApplySettings")) {
         return o_isiconCG ? o_isiconCG(self, _cmd, descriptor) : NULL;
     }
@@ -907,6 +969,8 @@ static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
 }
 
 static CGImageRef tb_isicon_cg2(id self, SEL _cmd, id descriptor) {
+    static int loggedIcon1 = 0;
+    if (loggedIcon1 < 20) { loggedIcon1++; TBLog(@"api=ISIcon.cg2 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     if (!TBApplyEnabled(@"ApplySettings")) {
         return o_isiconCG2 ? o_isiconCG2(self, _cmd, descriptor) : NULL;
     }
@@ -931,6 +995,8 @@ static BOOL TBIsDynamicBID(NSString *bid) {
 }
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
+    static int loggedIcon2 = 0;
+    if (loggedIcon2 < 20) { loggedIcon2++; TBLog(@"api=ISIcon.img1 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     id ret = o_isiconImg ? o_isiconImg(self, _cmd, descriptor) : nil;
     if (!TBApplyEnabled(@"ApplySettings")) return ret;
 
@@ -957,6 +1023,8 @@ static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
 }
 
 static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
+    static int loggedIcon3 = 0;
+    if (loggedIcon3 < 20) { loggedIcon3++; TBLog(@"api=ISIcon.img2 bid=%@", TBBIDFromISIcon(self) ?: @"(nil)"); }
     id ret = o_isiconImg2 ? o_isiconImg2(self, _cmd, descriptor) : nil;
     if (!TBApplyEnabled(@"ApplySettings")) return ret;
 
@@ -1303,12 +1371,18 @@ static void TBInstall(void) {
     // iconservicesagent 的最终生成通道：资源库拖拽/桌面重建会重新经过这里。
     // 只在原实现返回后替换 IFImage，失败一律返回原图。
     Class generation = NSClassFromString(@"ISGenerationRequest");
-    if (generation && !gDoneISGeneration &&
-        TBHasMethod(generation, @"generateImageReturningRecordIdentifiers:")) {
+    if (generation && !gDoneISGeneration) {
         gDoneISGeneration = YES;
-        o_isGeneration = (FnISGeneration)TBHook(generation,
-            @"generateImageReturningRecordIdentifiers:",
-            (IMP)tb_isGeneration, "ISGenerationRequest 图标生成");
+        if (TBHasMethod(generation, @"generateImageReturningRecordIdentifiers:")) {
+            o_isGeneration = (FnISGeneration)TBHook(generation,
+                @"generateImageReturningRecordIdentifiers:",
+                (IMP)tb_isGeneration, "ISGenerationRequest 图标生成");
+        }
+        if (TBHasMethod(generation, @"generateImage")) {
+            o_isGenerateImage = (FnISGenerateImage)TBHook(generation,
+                @"generateImage", (IMP)tb_isGenerateImage,
+                "ISGenerationRequest generateImage");
+        }
     }
 
     // IFImage（IconServices 通道）
@@ -1510,6 +1584,7 @@ static void TBTouchMarker(const char *tag) {
     const char *paths[] = {
         "/var/mobile/Library/ThemeBoard/alive.txt",
         "/var/jb/var/mobile/Library/ThemeBoard/alive.txt",
+        "/tmp/themeboard-alive.txt",
         NULL
     };
     for (int i = 0; paths[i]; i++) {
