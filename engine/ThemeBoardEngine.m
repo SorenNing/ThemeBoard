@@ -698,17 +698,17 @@ static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
 typedef void (*LayoutFn)(id, SEL);
 static LayoutFn o_iconViewLayout;
 static char kTBAppliedImageKey;
+static int gHealDepth = 0;
 
-static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
-    if (o_iconViewLayout) o_iconViewLayout(self, _cmd);
-    if (!TBApplyIconForDesktop() || TBSafeMode() || !TBEnabled()) return;
+static BOOL TBApplyThemeToIconView(id self) {
+    if (!self) return NO;
     @try {
         id iv = [self valueForKey:@"_iconImageView"];
         if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"image")] ||
             ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) {
             TBLogOnce([@"skip-iv|" stringByAppendingString:NSStringFromClass([self class])],
                       @"skip-iv cls=%@", NSStringFromClass([self class]));
-            return;
+            return NO;
         }
         SEL iconSel = NSSelectorFromString(@"icon");
         id icon = [self respondsToSelector:iconSel] ?
@@ -718,7 +718,7 @@ static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
         if (!theme) {
             TBLogOnce([@"skip-theme|" stringByAppendingString:bid ?: @"(nil)"],
                       @"skip-theme cls=%@ bid=%@", NSStringFromClass([self class]), bid ?: @"(nil)");
-            return;
+            return NO;
         }
         CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(iv, NSSelectorFromString(@"bounds"));
         UIImage *want = theme;
@@ -735,10 +735,42 @@ static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
             }
         }
         UIImage *cur = ((id (*)(id, SEL))objc_msgSend)(iv, NSSelectorFromString(@"image"));
-        if (cur == want) return;   // 已经是我们的图，什么都不做（避免反复 setImage）
+        if (cur == want) return NO;   // 已经是我们的图，什么都不做
         ((void (*)(id, SEL, id))objc_msgSend)(iv, NSSelectorFromString(@"setImage:"), want);
         TBLogOnce([@"heal|" stringByAppendingString:bid ?: @"?"], @"heal %@", bid);
+        return YES;
     } @catch (NSException *e) { }
+    return NO;
+}
+
+static NSInteger TBHealViewTree(UIView *v, NSInteger depth) {
+    if (!v || depth > 12) return 0;
+    NSInteger fixed = 0;
+    if ([v respondsToSelector:NSSelectorFromString(@"_iconImageView")]) {
+        if (TBApplyThemeToIconView(v)) fixed++;
+    }
+    for (UIView *sub in v.subviews) fixed += TBHealViewTree(sub, depth + 1);
+    return fixed;
+}
+
+/// 换主题后遍历窗口层级强制重贴（不依赖图标视图是否登记为缓存观察者）
+static void TBHealAllIconViews(void) {
+    if (gHealDepth > 0) return;
+    gHealDepth++;
+    @try {
+        NSInteger fixed = 0;
+        for (UIView *w in [[UIApplication sharedApplication] windows]) {
+            fixed += TBHealViewTree(w, 0);
+        }
+        if (fixed > 0) TBLog(@"换主题后重贴 %ld 个图标视图", (long)fixed);
+    } @catch (NSException *e) { }
+    gHealDepth--;
+}
+
+static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
+    if (o_iconViewLayout) o_iconViewLayout(self, _cmd);
+    if (!TBApplyIconForDesktop() || TBSafeMode() || !TBEnabled()) return;
+    TBApplyThemeToIconView(self);
 }
 
 // ---- 换图标后重贴（拖拽放置/资源库→桌面 时系统直接贴原始图，读端 hook 管不到）----
@@ -1737,39 +1769,46 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
     [gLock unlock];
     TBLog(@"设置变更：重建索引，清理 %lu 个缓存", (unsigned long)caches.count);
 
+    // 注意：缓存写入端被我们接管后，换主题必须通知图标视图重取，
+    // 这一步不能受「清缓存」开关控制（之前那版会被它一票否决 → 只能重启才刷新）
     BOOL allowPurge = YES;
     id pv = TBPref(@"PurgeCache");
     if (pv) allowPurge = [pv boolValue];
-    if (!allowPurge) { TBLog(@"已跳过清缓存（设置里关掉了）"); return; }
+    if (!allowPurge) TBLog(@"清缓存开关关闭：跳过逐个清缓存，仍执行图标重取");
 
-    // 主线程、按图标、分批清理：一次清光会把 SpringBoard 拖死
+    [gImageCache removeAllObjects];
+
+    // 主线程：先（可选）分批清缓存，再通知图标视图重取，最后让 SpringBoard 重排
     dispatch_async(dispatch_get_main_queue(), ^{
         NSArray *icons = TBAllIcons();
         NSArray *cacheList = caches;
-        if (icons.count == 0) {
-            // 拿不到图标列表时退化为旧方式，但只清一次且容错
-            for (NSValue *v in cacheList) { TBPurgeIcons(v, nil); }
-            TBLog(@"清缓存（无图标列表）");
-            return;
+
+        if (allowPurge) {
+            if (icons.count == 0) {
+                for (NSValue *v in cacheList) { TBPurgeIcons(v, nil); }
+                TBLog(@"清缓存（无图标列表）");
+            } else {
+                const NSUInteger chunk = 30;
+                NSUInteger i = 0;
+                NSInteger round = 0;
+                while (i < icons.count) {
+                    NSUInteger n = MIN(chunk, icons.count - i);
+                    NSArray *part = [icons subarrayWithRange:NSMakeRange(i, n)];
+                    for (NSValue *v in cacheList) { TBPurgeIcons(v, part); }
+                    i += n;
+                    round++;
+                    usleep(20000);   // 每批之间让出 20ms，避免主线程长时间被占用
+                }
+                TBLog(@"已分批清理 %lu 个图标的缓存（%ld 批）", (unsigned long)icons.count, (long)round);
+            }
         }
 
-        const NSUInteger chunk = 30;
-        NSUInteger i = 0;
-        NSInteger round = 0;
-        while (i < icons.count) {
-            NSUInteger n = MIN(chunk, icons.count - i);
-            NSArray *part = [icons subarrayWithRange:NSMakeRange(i, n)];
-            for (NSValue *v in cacheList) { TBPurgeIcons(v, part); }
-            i += n;
-            round++;
-            usleep(20000);   // 每批之间让出 20ms，避免主线程长时间被占用
-        }
-        TBLog(@"已分批清理 %lu 个图标的缓存（%ld 批）", (unsigned long)icons.count, (long)round);
-
-        // 关键：清完缓存还要通知图标视图重取，否则屏幕上仍是旧主题的图
         NSInteger sent = TBInvalidateIconViews(icons);
         TBLog(@"已通知图标视图重取 %ld 次", (long)sent);
-        [gImageCache removeAllObjects];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            TBHealAllIconViews();
+        });
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             TBRefreshSpringBoard();
