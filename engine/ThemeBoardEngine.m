@@ -648,6 +648,45 @@ static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
     }
 }
 
+// ---- 自愈式校验：布局时只做指针比对，图不对才贴一次（收敛后不再触发）----
+typedef void (*LayoutFn)(id, SEL);
+static LayoutFn o_iconViewLayout;
+static char kTBAppliedImageKey;
+
+static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
+    if (o_iconViewLayout) o_iconViewLayout(self, _cmd);
+    if (!TBApplyIconForDesktop() || TBSafeMode() || !TBEnabled()) return;
+    @try {
+        id iv = [self valueForKey:@"_iconImageView"];
+        if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"image")] ||
+            ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) return;
+        SEL iconSel = NSSelectorFromString(@"icon");
+        id icon = [self respondsToSelector:iconSel] ?
+            ((id (*)(id, SEL))objc_msgSend)(self, iconSel) : nil;
+        NSString *bid = TBBIDFromIcon(icon);
+        UIImage *theme = TBImageForBundle(bid);
+        if (!theme) return;
+        CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(iv, NSSelectorFromString(@"bounds"));
+        UIImage *want = theme;
+        if (b.size.width > 1 && b.size.height > 1 &&
+            (fabs(theme.size.width - b.size.width) > 0.6 || fabs(theme.size.height - b.size.height) > 0.6)) {
+            UIImage *cached = objc_getAssociatedObject(iv, &kTBAppliedImageKey);
+            if (cached && fabs(cached.size.width - b.size.width) < 0.6 &&
+                fabs(cached.size.height - b.size.height) < 0.6) {
+                want = cached;
+            } else {
+                TBInfo fi; fi.size = b.size; fi.scale = 0; fi.ratio = 0;
+                want = TBFitImage(theme, fi) ?: theme;
+                objc_setAssociatedObject(iv, &kTBAppliedImageKey, want, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        }
+        UIImage *cur = ((id (*)(id, SEL))objc_msgSend)(iv, NSSelectorFromString(@"image"));
+        if (cur == want) return;   // 已经是我们的图，什么都不做（避免反复 setImage）
+        ((void (*)(id, SEL, id))objc_msgSend)(iv, NSSelectorFromString(@"setImage:"), want);
+        TBLogOnce([@"heal|" stringByAppendingString:bid ?: @"?"], @"heal %@", bid);
+    } @catch (NSException *e) { }
+}
+
 // ---- 换图标后重贴（拖拽放置/资源库→桌面 时系统直接贴原始图，读端 hook 管不到）----
 // 只在 SBIconView 更换 icon 时触发一次，不在 getter 热路径里，所以不会像
 // 之前那样引起 SpringBoard 闪屏重启。
@@ -1289,6 +1328,7 @@ static BOOL gDoneGen = NO;
 static BOOL gDoneISGeneration = NO;
 static BOOL gDoneIconImageView = NO;
 static BOOL gDoneSetIcon = NO;
+static BOOL gDoneLayout = NO;
 static BOOL gDoneIFImage = NO;
 
 static void TBInstall(void) {
@@ -1426,7 +1466,15 @@ static void TBInstall(void) {
         }
     }
 
-    // SBIconView -_setIcon:animated:（拖拽放置后重贴主题图；每个图标只触发一次）
+    // SBIconView -layoutSubviews（自愈校验：图不对才贴，收敛后不再触发）
+    Class iconViewCls2 = NSClassFromString(@"SBIconView");
+    if (iconViewCls2 && !gDoneLayout && TBHasMethod(iconViewCls2, @"layoutSubviews")) {
+        gDoneLayout = YES;
+        o_iconViewLayout = (LayoutFn)TBHook(iconViewCls2, @"layoutSubviews",
+                                            (IMP)tb_iconViewLayoutSubviews, "SBIconView.layout");
+    }
+
+    // SBIconView -_setIcon:animated:（若存在则用；17.2 上通常不存在）
     Class iconViewCls = NSClassFromString(@"SBIconView");
     if (iconViewCls && !gDoneSetIcon && TBHasMethod(iconViewCls, @"_setIcon:animated:")) {
         gDoneSetIcon = YES;
