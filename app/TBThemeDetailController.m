@@ -124,52 +124,6 @@ static NSString *const kGridID = @"grid";
     [self.navigationController pushViewController:[[TBMissingController alloc] initWithTheme:self.theme] animated:YES];
 }
 
-- (void)exportTapped {
-    // 导出已用的图标：主题里覆盖到的、已安装应用的图标，复制到 Documents/Exports/<主题名>/IconBundles/
-    NSArray<NSDictionary *> *apps = [TBAppInfo installedApps];
-    NSMutableArray<NSString *> *hit = [NSMutableArray array];
-    NSMutableArray<NSString *> *missed = [NSMutableArray array];
-
-    NSString *base = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *dir = [base stringByAppendingPathComponent:
-                     [NSString stringWithFormat:@"Exports/%@/IconBundles", self.theme.name]];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:NULL];
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSDictionary *a in apps) {
-        NSString *bid = a[@"bid"];
-        if (!bid.length) continue;
-        NSString *path = [self.theme imagePathForBundleID:bid];
-        if (path && [fm fileExistsAtPath:path]) {
-            NSString *fname = [bid stringByAppendingString:@".png"];
-            NSString *dst = [dir stringByAppendingPathComponent:fname];
-            [fm copyItemAtPath:path toPath:dst error:NULL];
-            [hit addObject:bid];
-        } else {
-            [missed addObject:bid];
-        }
-    }
-
-    // 缺失清单
-    if (missed.count) {
-        NSString *missPath = [dir stringByAppendingPathComponent:@"缺失清单.txt"];
-        NSMutableString *mt = [NSMutableString string];
-        for (NSString *b in missed) [mt appendFormat:@"%@\n", b];
-        [mt writeToFile:missPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-    }
-
-    NSString *msg = [NSString stringWithFormat:@"已导出 %lu 个应用图标\n保存位置：\n%@",
-                     (unsigned long)hit.count, dir];
-    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"导出完成"
-                                                                message:msg
-                                                         preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"复制路径" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
-        [UIPasteboard generalPasteboard].string = dir;
-    }]];
-    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:ac animated:YES completion:nil];
-}
-
 - (void)applyTapped {
     [TBPrefs setString:self.theme.name forKey:TBKeyActiveTheme];
     [TBPrefs setBool:YES forKey:TBKeyEnabled];
