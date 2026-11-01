@@ -1704,6 +1704,32 @@ static void TBPurgeThemedIcons(void) {
     });
 }
 
+/// 让所有注册过的图标缓存通知观察者（图标视图）重新取图 —— 换主题后即时生效的关键
+static NSInteger TBInvalidateIconViews(NSArray *icons) {
+    if (!icons.count) return 0;
+    [gLock lock];
+    NSArray *cacheList = gCaches.allObjects;
+    [gLock unlock];
+    SEL upd = NSSelectorFromString(@"notifyObserversOfUpdateForIcon:");
+    SEL updU = NSSelectorFromString(@"notifyObserversOfUnmaskedUpdateForIcon:");
+    NSInteger sent = 0;
+    for (NSValue *v in cacheList) {
+        id cache = v.nonretainedObjectValue;
+        if (!cache) continue;
+        BOOL canUpd = [cache respondsToSelector:upd];
+        BOOL canUpdU = [cache respondsToSelector:updU];
+        if (!canUpd && !canUpdU) continue;
+        for (id icon in icons) {
+            @try {
+                if (canUpd) ((void (*)(id, SEL, id))objc_msgSend)(cache, upd, icon);
+                if (canUpdU) ((void (*)(id, SEL, id))objc_msgSend)(cache, updU, icon);
+                sent++;
+            } @catch (NSException *e) { }
+        }
+    }
+    return sent;
+}
+
 static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, const void *obj, CFDictionaryRef info) {
     [gLock lock];
     gIndex = nil;
@@ -1739,15 +1765,16 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
             usleep(20000);   // 每批之间让出 20ms，避免主线程长时间被占用
         }
         TBLog(@"已分批清理 %lu 个图标的缓存（%ld 批）", (unsigned long)icons.count, (long)round);
-    });
 
-    [gImageCache removeAllObjects];
-    if (TBPref(@"ForceRefresh") && [TBPref(@"ForceRefresh") boolValue]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+        // 关键：清完缓存还要通知图标视图重取，否则屏幕上仍是旧主题的图
+        NSInteger sent = TBInvalidateIconViews(icons);
+        TBLog(@"已通知图标视图重取 %ld 次", (long)sent);
+        [gImageCache removeAllObjects];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             TBRefreshSpringBoard();
         });
-    }
+    });
 }
 
 /// App 请求重启桌面：让 SpringBoard 退出，系统会自动把它拉起来（等效 respring）
