@@ -1251,13 +1251,22 @@ static NSString *TBDynamicResourcePath(NSString *bid) {
     if (!res.count) return nil;
 
     (void)prefix;
-    // 明确按名字优先级挑，绝不按 @3x 排序 —— 否则会挑中 ClockIconRedDot@3x（12x12 的橙点）
-    NSArray<NSString *> *candidates = [bid isEqualToString:@"com.apple.mobiletimer"]
+    // 明确按名字优先级挑，支持多种后缀变体（_1024/_1200/@3x 等）
+    NSArray<NSString *> *baseCandidates = [bid isEqualToString:@"com.apple.mobiletimer"]
         ? @[@"clockiconbackgroundsquare", @"clockiconbackground", @"clockicon"]
         : @[@"calendariconbackgroundsquare", @"calendariconbackground", @"calendaricon"];
-    for (NSString *cand in candidates) {
-        NSString *hit = res[cand];
+    for (NSString *base in baseCandidates) {
+        // 优先找精确匹配
+        NSString *hit = res[base];
         if (hit.length) return hit;
+        // 再找带尺寸后缀的变体
+        NSString *lowerBase = [base lowercaseString];
+        for (NSString *key in res) {
+            if ([key lowerCaseCompare:lowerBase] == NSOrderedSame) {
+                hit = res[key];
+                if (hit.length) return hit;
+            }
+        }
     }
     return nil;
 }
