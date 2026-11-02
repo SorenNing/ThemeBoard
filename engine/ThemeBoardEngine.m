@@ -801,6 +801,11 @@ static BOOL TBApplyThemeToIconView(id self) {
 static NSInteger TBHealViewTree(UIView *v, NSInteger depth) {
     if (!v || depth > 12) return 0;
     NSInteger fixed = 0;
+    // 时钟视图：让系统用新底图重画指针（SnowBoard 也是这么做的）
+    if ([v respondsToSelector:NSSelectorFromString(@"updateClockImages")]) {
+        @try { ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"updateClockImages")); }
+        @catch (NSException *e) { }
+    }
     if ([v respondsToSelector:NSSelectorFromString(@"icon")] ||
         [v respondsToSelector:NSSelectorFromString(@"_iconImageView")]) {
         if (TBApplyThemeToIconView(v)) fixed++;
