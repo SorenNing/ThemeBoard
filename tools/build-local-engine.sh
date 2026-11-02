@@ -38,6 +38,6 @@ print("cpusubtype:", hex(sub), "-> 0x80000002")
 print("chained_fixups:", 0x80000034 in cmds, "| dyld_info:", 0x22 in cmds)
 PY
 
-ldid -S "$OUT/ThemeBoardEngine.dylib"
+ldid -Cadhoc -S "$OUT/ThemeBoardEngine.dylib"
 file "$OUT/ThemeBoardEngine.dylib"
 echo "== $OUT/ThemeBoardEngine.dylib"
