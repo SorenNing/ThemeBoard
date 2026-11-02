@@ -1262,7 +1262,7 @@ static NSString *TBDynamicResourcePath(NSString *bid) {
         // 再找带尺寸后缀的变体
         NSString *lowerBase = [base lowercaseString];
         for (NSString *key in res) {
-            if ([key lowerCaseCompare:lowerBase] == NSOrderedSame) {
+            if ([key caseInsensitiveCompare:lowerBase] == NSOrderedSame) {
                 hit = res[key];
                 if (hit.length) return hit;
             }
