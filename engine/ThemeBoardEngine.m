@@ -1245,17 +1245,16 @@ static NSString *TBDynamicResourcePath(NSString *bid) {
     [gLock unlock];
     if (!res.count) return nil;
 
-    NSString *best = nil;
-    NSInteger bestRank = -1;
-    for (NSString *key in res) {
-        if (![key hasPrefix:prefix]) continue;
-        if (![key hasSuffix:@".png"]) continue;
-        NSInteger rank = 1;
-        if ([key rangeOfString:@"@3x"].location != NSNotFound) rank = 3;
-        else if ([key rangeOfString:@"@2x"].location != NSNotFound) rank = 2;
-        if (rank > bestRank) { bestRank = rank; best = res[key]; }
+    (void)prefix;
+    // 明确按名字优先级挑，绝不按 @3x 排序 —— 否则会挑中 ClockIconRedDot@3x（12x12 的橙点）
+    NSArray<NSString *> *candidates = [bid isEqualToString:@"com.apple.mobiletimer"]
+        ? @[@"clockiconbackgroundsquare", @"clockiconbackground", @"clockicon"]
+        : @[@"calendariconbackgroundsquare", @"calendariconbackground", @"calendaricon"];
+    for (NSString *cand in candidates) {
+        NSString *hit = res[cand];
+        if (hit.length) return hit;
     }
-    return best;
+    return nil;
 }
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
@@ -1463,73 +1462,13 @@ typedef struct { double w, h, scale, ratio; } TBClockInfo;      // SBIconImageIn
 typedef id (*ClockIconImageFn)(id, SEL, TBClockInfo, BOOL);
 static ClockIconImageFn o_clockIconImage;
 
-/// 按时钟素材自己合成：底图 + 按时针/分针角度旋转 + 中心红点
-/// 素材取自主题 Bundles/：ClockIconBackgroundSquare / ClockIconHourHand /
-/// ClockIconMinuteHand / ClockIconRedDot
-static UIImage *TBClockCompositeImage(CGSize pt, CGFloat scale) {
-    if (pt.width < 1 || pt.height < 1) return nil;
-    if (scale < 0.5 || scale > 4) scale = 3.0;
-    UIImage *bg = TBResourceImage(@"ClockIconBackgroundSquare") ?: TBResourceImage(@"ClockIconBackground");
-    UIImage *hour = TBResourceImage(@"ClockIconHourHand");
-    UIImage *minute = TBResourceImage(@"ClockIconMinuteHand");
-    UIImage *dot = TBResourceImage(@"ClockIconRedDot") ?: TBResourceImage(@"ClockIconCenterDot");
-    if (!bg) {
-        TBLogOnce(@"clocksrc|missing", @"时钟合成：主题里没有 ClockIconBackgroundSquare，放弃合成");
-        return nil;
-    }
-    TBLogOnce(@"clocksrc|ok", @"时钟合成 素材 bg=%d hour=%d minute=%d dot=%d",
-              bg != nil, hour != nil, minute != nil, dot != nil);
-
-    NSDate *now = [NSDate date];
-    NSCalendar *cal = [NSCalendar currentCalendar];
-    NSDateComponents *c = [cal components:(NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
-                                  fromDate:now];
-    CGFloat hourAngle = ((c.hour % 12) + c.minute / 60.0) * (M_PI / 6.0);
-    CGFloat minAngle = (c.minute + c.second / 60.0) * (M_PI / 30.0);
-
-    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
-    fmt.scale = scale;
-    fmt.opaque = NO;
-    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:pt format:fmt];
-    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        CGContextRef gc = ctx.CGContext;
-        CGRect full = CGRectMake(0, 0, pt.width, pt.height);
-        [bg drawInRect:full];
-        CGPoint center = CGPointMake(pt.width / 2.0, pt.height / 2.0);
-        // 指针素材是「朝上、轴心在底部中心」，绕中心旋转
-        void (^drawHand)(UIImage *, CGFloat) = ^(UIImage *hand, CGFloat angle) {
-            if (!hand) return;
-            CGSize sz = hand.size;
-            if (sz.width < 1 || sz.height < 1) return;
-            CGContextSaveGState(gc);
-            CGContextTranslateCTM(gc, center.x, center.y);
-            CGContextRotateCTM(gc, angle);
-            [hand drawInRect:CGRectMake(-sz.width / 2.0, -sz.height, sz.width, sz.height)];
-            CGContextRestoreGState(gc);
-        };
-        drawHand(hour, hourAngle);
-        drawHand(minute, minAngle);
-        if (dot) {
-            CGSize ds = dot.size;
-            if (ds.width > 0 && ds.height > 0) {
-                [dot drawInRect:CGRectMake(center.x - ds.width / 2.0,
-                                           center.y - ds.height / 2.0, ds.width, ds.height)];
-            }
-        }
-    }];
-}
-
 static id tb_clockIconImage(id self, SEL _cmd, TBClockInfo info, BOOL mask) {
+    // 只替换底图，指针由系统自己画（SnowBoard 同款做法）：
+    // 系统时钟视图会拿这张图当表盘，再把时/分/秒针叠上去，所以会跟着时间走。
     if (TBEnabled() && !TBSafeMode()) {
-        CGFloat scale = info.scale > 0.5 ? info.scale : 3.0;
-        UIImage *composed = TBClockCompositeImage(CGSizeMake(info.w, info.h), scale);
-        if (composed) {
-            TBLogOnce(@"clockcompose|hit", @"serve 时钟图标（素材合成 %.0fx%.0f）", info.w, info.h);
-            return composed;
-        }
         UIImage *img = TBImageForBundle(@"com.apple.mobiletimer");
         if (img) {
-            TBLog(@"serve 时钟图标（桌面合成）");
+            TBLogOnce(@"clockbase|hit", @"serve 时钟底图 %@", [img valueForKey:@"size"] ? @"(ok)" : @"(ok)");
             TBInfo fi; fi.size = CGSizeMake(info.w, info.h); fi.scale = info.scale; fi.ratio = 0;
             return TBFitImage(img, fi);
         }
