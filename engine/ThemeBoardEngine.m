@@ -278,9 +278,13 @@ static NSString *TBStripName(NSString *file) {
 
 static void TBLoadIndex(void);          // 前置声明：TBResourceImage 会用到
 
+static NSString *gBundleResTheme;
 static void TBLoadBundleResources(NSString *themeDir) {
-    if (gBundleRes) return;
+    // 之前只要建过一次就永不重建 —— 换主题后会一直用旧主题的资源表，
+    // 导致「主题无此图」的假阴性（时钟底图就是这么丢的）。改为按主题目录缓存。
+    if (gBundleRes && gBundleResTheme && [gBundleResTheme isEqualToString:themeDir]) return;
     gBundleRes = [NSMutableDictionary dictionary];
+    gBundleResTheme = themeDir ?: @"";
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *root = [themeDir stringByAppendingPathComponent:@"Bundles"];
     NSMutableArray *stack = [NSMutableArray arrayWithObject:root];
@@ -418,6 +422,58 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
 static BOOL TBIsDynamicBID(NSString *bid);
 static NSString *TBDynamicResourcePath(NSString *bid);
 
+/// 日历合成（SnowBoard 同款）：主题底图 + 红色星期 + 黑色日期
+/// 主题给的 com.apple.mobilecal.png 是空白日历底图，日期必须自己画上去
+static UIImage *TBCalendarCompositeImage(UIImage *bg) {
+    if (!bg) return nil;
+    CGFloat w = bg.size.width > 1 ? bg.size.width : 180.0;
+    CGFloat scale = bg.scale > 0 ? bg.scale : 3.0;
+
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSDate *now = [NSDate date];
+    NSDateComponents *comp = [cal components:(NSCalendarUnitDay | NSCalendarUnitWeekday) fromDate:now];
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.locale = [NSLocale currentLocale];
+    // 星期：短格式（周三 / Wed）
+    NSArray *weekdaySymbols = df.shortWeekdaySymbols;
+    NSString *weekText = @"";
+    NSInteger wd = comp.weekday - 1;
+    if (wd >= 0 && wd < (NSInteger)weekdaySymbols.count) weekText = weekdaySymbols[wd];
+    NSString *dayText = [NSString stringWithFormat:@"%ld", (long)comp.day];
+
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = scale;
+    fmt.opaque = NO;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(w, w) format:fmt];
+    UIImage *out = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [bg drawInRect:CGRectMake(0, 0, w, w)];
+
+        // 星期（红），字号 = 宽 × 0.1667
+        UIFont *weekFont = [UIFont systemFontOfSize:w * 0.166667 weight:UIFontWeightSemibold];
+        UIColor *red = [UIColor colorWithRed:1.0 green:0.23137 blue:0.18824 alpha:1.0];
+        NSMutableParagraphStyle *center = [[NSMutableParagraphStyle alloc] init];
+        center.alignment = NSTextAlignmentCenter;
+        NSDictionary *weekAttr = @{
+            NSFontAttributeName: weekFont,
+            NSForegroundColorAttributeName: red,
+            NSParagraphStyleAttributeName: center,
+        };
+        CGFloat weekH = weekFont.lineHeight;
+        [weekText drawInRect:CGRectMake(0, w * 0.115, w, weekH) withAttributes:weekAttr];
+
+        // 日期数字（黑），字号 = 宽 × 0.6583
+        UIFont *numFont = [UIFont systemFontOfSize:w * 0.658333 weight:UIFontWeightRegular];
+        NSDictionary *numAttr = @{
+            NSFontAttributeName: numFont,
+            NSForegroundColorAttributeName: [UIColor blackColor],
+            NSParagraphStyleAttributeName: center,
+        };
+        CGFloat numH = numFont.lineHeight;
+        [dayText drawInRect:CGRectMake(0, w * 0.30, w, numH) withAttributes:numAttr];
+    }];
+    return out;
+}
+
 /// 取主题图：锁内只做字典查找，读盘/绘制都在锁外，避免 SpringBoard 被拖死
 static UIImage *TBImageForBundle(NSString *bid) {
     if (!bid.length || !TBEnabled()) return nil;
@@ -436,10 +492,26 @@ static UIImage *TBImageForBundle(NSString *bid) {
                   @"dynamic 图来自 Bundles: %@ → %@", bid, path.lastPathComponent);
     }
 
-    UIImage *cached = [gImageCache objectForKey:bid];
+    BOOL isCalendar = [bid isEqualToString:@"com.apple.mobilecal"];
+    NSString *cacheKey = bid;
+    if (isCalendar) {
+        // 日历按天缓存，跨天自动重画
+        NSDateFormatter *dfd = [[NSDateFormatter alloc] init];
+        dfd.dateFormat = @"yyyyMMdd";
+        cacheKey = [bid stringByAppendingFormat:@"|%@", [dfd stringFromDate:[NSDate date]]];
+    }
+    UIImage *cached = [gImageCache objectForKey:cacheKey];
     if (cached) return cached;
 
     UIImage *img = [[UIImage alloc] initWithContentsOfFile:path];   // 不用被 hook 的类方法
+    if (img && isCalendar) {
+        UIImage *composed = TBCalendarCompositeImage(img);
+        if (composed) {
+            TBLogOnce(@"calc|ok", @"日历合成：底图 + 红星期 + 黑日期");
+            [gImageCache setObject:composed forKey:cacheKey];
+            return composed;
+        }
+    }
     if (img) {
         // 日历/时钟带实时内容，不能进缓存，否则日期和指针会冻住
         BOOL dynamic = [bid isEqualToString:@"com.apple.mobilecal"] ||
@@ -1256,17 +1328,17 @@ static NSString *TBDynamicResourcePath(NSString *bid) {
         ? @[@"clockiconbackgroundsquare", @"clockiconbackground", @"clockicon"]
         : @[@"calendariconbackgroundsquare", @"calendariconbackground", @"calendaricon"];
     for (NSString *base in baseCandidates) {
-        // 优先找精确匹配
-        NSString *hit = res[base];
-        if (hit.length) return hit;
-        // 再找带尺寸后缀的变体
         NSString *lowerBase = [base lowercaseString];
+        NSString *best = nil;
+        NSInteger bestLen = 0;
         for (NSString *key in res) {
-            if ([key caseInsensitiveCompare:lowerBase] == NSOrderedSame) {
-                hit = res[key];
-                if (hit.length) return hit;
-            }
+            if (![key hasPrefix:lowerBase]) continue;
+            if (![key hasSuffix:@".png"]) continue;
+            // 命中即可，越短越准（clockiconbackgroundsquare.png 优先于 ..._1024.png）
+            NSInteger len = (NSInteger)key.length;
+            if (!best || len < bestLen) { best = res[key]; bestLen = len; }
         }
+        if (best) return best;
     }
     return nil;
 }
@@ -1613,10 +1685,10 @@ static void TBInstall(void) {
     // 桌面时钟图标（运行时检测）
     if (clockView && !gDoneClock) {
         gDoneClock = YES;
-        if (TBHasMethod(clockView, @"iconImageWithImageInfo:includingMask:")) {
-            o_clockIconImage = (ClockIconImageFn)TBHookClass(clockView, @"iconImageWithImageInfo:includingMask:",
-                                                             (IMP)tb_clockIconImage, "桌面时钟图标");
-        }
+        // 不接管 iconImageWithImageInfo:includingMask:
+        // 那一层返回的是「表盘+指针」的合成图，接管后系统画的指针会变形
+        //（三根一样粗、橙秒针消失）。改由资源重定向提供 ClockIconBackgroundSquare，
+        // 让系统自己合成底图与指针 —— 与 SnowBoard 一致。
         if (TBHasMethod(clockView, @"makeHoursHandLayerWithImageSet:")) {
             o_clockHandLayer[0] = (ClockLayerFn)TBHookClass(clockView, @"makeHoursHandLayerWithImageSet:",
                                                             (IMP)tb_clockHandLayer, "时钟时针层");
@@ -1927,6 +1999,8 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n, c
     const NSUInteger mySeq = ++sReloadSeq;
     [gLock lock];
     gIndex = nil;
+    gBundleRes = nil;          // 强制重建资源表（含时钟/日历素材）
+    gBundleResTheme = nil;
     NSArray *caches = gCaches.allObjects;
     [gLock unlock];
     TBLog(@"设置变更：重建索引，清理 %lu 个缓存", (unsigned long)caches.count);
