@@ -7,7 +7,7 @@
 /// 可用的注入目录（不存在或不可写则返回 nil）
 + (nullable NSString *)dynamicLibrariesDir;
 
-/// 引擎运行状态：@"运行中" / @"已安装·未运行" / @"未检测到"
+/// 尝试检查安装文件；注入目录可能被隐藏，运行状态不能据日志确认
 + (NSString *)runtimeState;
 
 /// 引擎是否已经装好

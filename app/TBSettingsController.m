@@ -33,11 +33,6 @@
              @"d": @"CustomCornerRadius，60 ≈ 满圆角，默认 13.42"},
            @{@"t": @"透明玻璃强度", @"k": TBKeyGlassOverlayStrength, @"v": @0.35, @"slider": @YES,
              @"d": @"玻璃叠加层（iPhoneOverlay）的浓淡，默认 35%；0 = 不用玻璃层"} ],
-        @[ @{@"t": @"程序坞", @"k": TBKeyApplyDock, @"v": @YES},
-           @{@"t": @"文件夹预览", @"k": TBKeyApplyFolder, @"v": @YES},
-           @{@"t": @"App 切换器", @"k": TBKeyApplySwitcher, @"v": @YES},
-           @{@"t": @"设置页图标", @"k": TBKeyApplySettings, @"v": @YES},
-           @{@"t": @"分享面板", @"k": TBKeyApplyShare, @"v": @YES} ],
         @[ @{@"t": @"在文件管理器中打开主题目录", @"act": @"open"} ],
         @[ @{@"t": @"日历不叠加日期", @"k": @"NoCalendarDate", @"v": @NO,
              @"d": @"主题日历图标已经画了日期时打开，直接用主题图标"} ],
@@ -51,11 +46,9 @@
     NSDictionary *icons = @{
         @"引擎状态": @"waveform.path.ecg", @"重启桌面（让引擎生效）": @"arrow.clockwise.circle", @"安装 / 更新引擎": @"arrow.down.circle",
         @"重启桌面": @"arrow.clockwise.circle",
-        @"启用引擎": @"power", @"程序坞": @"dock.rectangle", @"文件夹预览": @"folder",
+        @"启用引擎": @"power",
         @"用主题遮罩图": @"square.dashed", @"自定义图标圆角": @"circle.dashed", @"图标圆角半径": @"ruler",
         @"透明玻璃强度": @"drop",
-        @"App 切换器": @"rectangle.stack", @"设置页图标": @"gearshape", @"分享面板": @"square.and.arrow.up",
-        @"通知中心": @"bell.badge",
         @"导入主题…": @"square.and.arrow.down", @"在文件管理器中打开主题目录": @"folder.badge.gearshape",
         @"重新扫描主题": @"arrow.triangle.2.circlepath", @"清除当前主题": @"trash",
         @"日历不叠加日期": @"calendar.badge.minus",
@@ -83,8 +76,8 @@
         case 0: return @"引擎组件";
         case 1: return @"开关";
         case 2: return @"图标形状";
-        case 3: return @"生效范围";
-        case 4: return @"主题";
+        case 3: return @"主题";
+        case 4: return @"日历";
         case 5: return @"外观";
         default: return @"诊断";
     }
@@ -92,15 +85,11 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) {
-        NSString *st = [TBEngineInstaller runtimeState];
-        if ([st isEqualToString:@"运行中"]) return @"引擎正在运行。换主题、改开关都不需要重启桌面。";
-        if ([st isEqualToString:@"已安装·未运行"]) return @"引擎已安装但当前没在跑，重启一次桌面即可生效。";
-        return @"没有检测到引擎。RootHide 下 App 无法写入注入目录，请在 Sileo 安装「ThemeBoard 引擎」，装完重启一次桌面。";
+        return @"引擎运行状态无法仅凭日志确认。RootHide 可能隐藏注入目录；请在 Sileo 查看引擎是否已安装。";
     }
     if (section == 1) return @"关闭后完全恢复系统原样。";
     if (section == 2) return @"优先级：主题遮罩图 → 自定义圆角 → 系统形状。两个开关都关着 = 保持现在这样。";
-    if (section == 3) return @"程序坞 / 文件夹预览 / App 切换器共用系统图标缓存，任一开启即生效；设置页图标 / 通知中心 / 分享面板可单独关闭。";
-    if (section == 4) {
+    if (section == 3) {
         NSMutableString *s = [NSMutableString stringWithString:@"主题目录：\n"];
         for (NSDictionary *d in [TBThemeScanner rootDiagnostics]) {
             NSString *flag = [d[@"exists"] boolValue]
@@ -110,9 +99,9 @@
         }
         return s;
     }
+    if (section == 4) return nil;
     if (section == 5) return nil;
-    if (section == 6) return nil;
-    if (section == 7) return @"两个诊断开关默认关闭，重启桌面/重启用户空间后不会再自己打开。\n安全模式：只写日志、绝不换图（排查用）。\n清图标缓存：个别图标换了主题赖着不换时才需要打开；平常应用主题本身就会让桌面刷新。";
+    if (section == 6) return @"两个诊断开关默认关闭，重启桌面/重启用户空间后不会再自己打开。\n安全模式：只写日志、绝不换图（排查用）。\n清图标缓存：个别图标换了主题赖着不换时才需要打开；平常应用主题本身就会让桌面刷新。";
     return nil;
 }
 
@@ -183,13 +172,7 @@
             cell.accessoryType = UITableViewCellAccessoryNone;
             NSString *st = [TBEngineInstaller runtimeState];
             cell.detailTextLabel.text = st;
-            if ([st isEqualToString:@"运行中"]) {
-                cell.detailTextLabel.textColor = [UIColor systemGreenColor];
-            } else if ([st isEqualToString:@"已安装·未运行"]) {
-                cell.detailTextLabel.textColor = [UIColor systemOrangeColor];
-            } else {
-                cell.detailTextLabel.textColor = [UIColor systemRedColor];
-            }
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
         }
         if ([row[@"act"] isEqualToString:@"respring"]) {
             cell.accessoryType = UITableViewCellAccessoryNone;

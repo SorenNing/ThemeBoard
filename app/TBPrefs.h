@@ -6,12 +6,6 @@ extern NSString *const TBNotifyChanged;
 
 extern NSString *const TBKeyEnabled;        // BOOL 总开关
 extern NSString *const TBKeyActiveTheme;    // NSString 主题名
-extern NSString *const TBKeyApplyDock;      // BOOL
-extern NSString *const TBKeyApplyFolder;    // BOOL
-extern NSString *const TBKeyApplySwitcher;  // BOOL
-extern NSString *const TBKeyApplySettings;  // BOOL
-extern NSString *const TBKeyApplyShare;     // BOOL
-extern NSString *const TBKeyApplyNotification; // BOOL 通知中心
 extern NSString *const TBKeyLogEnabled;     // BOOL
 
 // ---- 图标形状 / 特效（引擎与 App 共用，键名不能改）----

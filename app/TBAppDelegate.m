@@ -8,50 +8,13 @@
 #import "TBPrefs.h"
 
 
-#pragma mark - 崩溃日志（App 侧，落盘到 /var/mobile/Library/ThemeBoard/app-crash.log）
-
-static NSString *TBCrashLogPath(void) {
-    NSString *dir = @"/var/mobile/Library/ThemeBoard";
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES
-                                               attributes:nil error:NULL];
-    return [dir stringByAppendingPathComponent:@"app-crash.log"];
-}
+#pragma mark - App 诊断（不写日志文件）
 
 void TBAppLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
-    NSString *line = [NSString stringWithFormat:@"%@ %@\n",
-                      [NSDate date], msg ?: @""];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:TBCrashLogPath()];
-    if (!fh) {
-        [line writeToFile:TBCrashLogPath() atomically:YES
-                 encoding:NSUTF8StringEncoding error:NULL];
-    } else {
-        @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; }
-        @catch (NSException *e) { }
-        [fh closeFile];
-    }
-}
-
-static void TBUncaughtExceptionHandler(NSException *e) {
-    TBAppLog(@"=== 未捕获异常 %@: %@\n%@", e.name, e.reason,
-             [e.callStackSymbols componentsJoinedByString:@"\n"]);
-}
-
-static void TBSignalHandler(int sig) {
-    NSString *s = [NSString stringWithFormat:@"=== 信号崩溃 signal=%d", sig];
-    TBAppLog(@"%@", s);
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
-static void TBCrashLogInstall(void) {
-    NSSetUncaughtExceptionHandler(&TBUncaughtExceptionHandler);
-    int sigs[] = {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP};
-    for (unsigned i = 0; i < sizeof(sigs)/sizeof(sigs[0]); i++) signal(sigs[i], TBSignalHandler);
-    TBAppLog(@"--- App 启动 v%@ ---",
-             [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?");
+    NSLog(@"[ThemeBoard] %@", msg ?: @"");
 }
 
 #pragma mark - 在视图树里找主题列表页
@@ -82,7 +45,6 @@ static TBThemeListController *TBFindThemeListController(UIViewController *vc, NS
 
 - (BOOL)application:(UIApplication *)application
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    TBCrashLogInstall();
     // 0.15.59：搜索框恢复 100% 系统外观 —— 不再安装任何自绘玻璃
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.window.backgroundColor = [UIColor colorWithRed:0.870 green:0.858 blue:0.843 alpha:1];

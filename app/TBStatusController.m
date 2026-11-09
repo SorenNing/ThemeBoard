@@ -110,23 +110,7 @@ static NSString *TBReadLogLossy(NSString *path) {
 - (void)refresh {
     NSMutableString *out = [NSMutableString string];
 
-    // ---- 1. 存活标记：引擎构造器第一件事写它（C 文件 API，最可靠）----
-    NSString *markerText = nil;
-    for (NSString *mk in @[@"/var/mobile/Library/ThemeBoard/alive.txt",
-                           @"/var/jb/var/mobile/Library/ThemeBoard/alive.txt"]) {
-        NSString *t = [NSString stringWithContentsOfFile:mk encoding:NSUTF8StringEncoding error:NULL];
-        if (t.length) { markerText = t; break; }
-    }
-    if (markerText.length) {
-        NSArray *ml = [markerText componentsSeparatedByString:@"\n"];
-        NSUInteger keep = ml.count > 8 ? ml.count - 8 : 0;
-        [out appendFormat:@"【存活标记】引擎已被加载\n%@\n\n",
-            [[ml subarrayWithRange:NSMakeRange(keep, ml.count - keep)] componentsJoinedByString:@"\n"]];
-    } else {
-        [out appendString:@"【存活标记】没有 —— 引擎 dylib 未被加载\n\n"];
-    }
-
-    // ---- 2. 引擎日志 ----
+    // 日志时间只能表明最近有写入；其他进程也可能写日志，不能据此断定引擎是否运行。
     NSString *path = @"/var/mobile/Library/ThemeBoard/engine.log";
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL];
     if (!attrs) {
@@ -137,16 +121,15 @@ static NSString *TBReadLogLossy(NSString *path) {
     NSDate *mtime = attrs[NSFileModificationDate];
     NSTimeInterval age = mtime ? -[mtime timeIntervalSinceNow] : -1;
 
+    self.engineState = @"运行状态未知";
     if (!attrs) {
-        self.engineState = @"未运行";
-        self.engineDetail = @"找不到 engine.log";
-    } else if (age >= 0 && age < 180) {
-        self.engineState = @"运行中";
-        self.engineDetail = [NSString stringWithFormat:@"%d 秒前的心跳", (int)age];
+        self.engineDetail = @"没有引擎日志，不能判断运行状态";
+    } else if (age < 0) {
+        self.engineDetail = @"日志时间异常，不能判断运行状态";
+    } else if (age < 180) {
+        self.engineDetail = [NSString stringWithFormat:@"日志 %.0f 秒前更新（仅供参考）", age];
     } else {
-        self.engineState = @"已停止";
-        self.engineDetail = age < 0 ? @"时间异常"
-            : [NSString stringWithFormat:@"%d 分钟没有更新", (int)(age / 60)];
+        self.engineDetail = [NSString stringWithFormat:@"日志 %.0f 分钟前更新（仅供参考）", age / 60];
     }
 
     NSString *log = TBReadLogLossy(path);

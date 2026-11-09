@@ -1,28 +1,13 @@
 #import "TBPaths.h"
 #import <UIKit/UIKit.h>
 
-#pragma mark - 日志（App 自己的小日志，和崩溃日志放一起）
+#pragma mark - 路径诊断（仅系统日志，不写文件）
 
 static void TBPathLog(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
     NSLog(@"[ThemeBoard] %@", msg);
-    NSString *dir = @"/var/mobile/Library/ThemeBoard";
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES
-                                               attributes:nil error:NULL];
-    NSString *line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], msg ?: @""];
-    NSString *path = [dir stringByAppendingPathComponent:@"paths.log"];
-    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
-    if (!fh) {
-        [line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-    } else {
-        @try {
-            [fh seekToEndOfFile];
-            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-        } @catch (NSException *e) { }
-        [fh closeFile];
-    }
 }
 
 #pragma mark - 根目录

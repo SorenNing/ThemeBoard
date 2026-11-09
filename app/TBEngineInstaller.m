@@ -28,19 +28,8 @@ static NSString *const kPlistName = @"ThemeBoardEngine.plist";
 }
 
 + (NSString *)runtimeState {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSDate *bestDate = nil;
-    for (NSString *p in @[@"/var/mobile/Library/ThemeBoard/engine.log",
-                          @"/var/jb/var/mobile/Library/ThemeBoard/engine.log",
-                          @"/var/root/Library/ThemeBoard/engine.log"]) {
-        NSDictionary *a = [fm attributesOfItemAtPath:p error:NULL];
-        NSDate *m = a[NSFileModificationDate];
-        if (!m) continue;
-        if (!bestDate || [m compare:bestDate] == NSOrderedDescending) bestDate = m;
-    }
-    if (!bestDate) return @"未检测到";
-    NSTimeInterval age = -[bestDate timeIntervalSinceNow];
-    return age < 180 ? @"运行中" : @"已安装·未运行";
+    // 注入目录可能被隐藏；仅凭最近日志无法判断当前是否在运行。
+    return [self isInstalled] ? @"已安装·运行状态未知" : @"运行状态未知";
 }
 
 + (BOOL)isInstalled {
