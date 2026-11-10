@@ -11,6 +11,7 @@
 
 @interface TBSettingsController () <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *model;
+@property (nonatomic, strong) NSTimer *runtimeTimer;
 @end
 
 @implementation TBSettingsController
@@ -67,6 +68,39 @@
         [patched addObject:rows];
     }
     self.model = patched;
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(runtimeChanged:) name:TBEngineRuntimeStateDidChangeNotification object:nil];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [TBEngineInstaller refreshRuntimeState];
+    [self runtimeChanged:nil];
+    [self.runtimeTimer invalidate];
+    __weak TBSettingsController *weakSelf = self;
+    self.runtimeTimer = [NSTimer timerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *timer) {
+        TBSettingsController *owner = weakSelf;
+        if (!owner || !owner.view.window) { [timer invalidate]; return; }
+        [TBEngineInstaller refreshRuntimeState];
+        [owner runtimeChanged:nil];
+    }];
+    self.runtimeTimer.tolerance = 0.3;
+    [[NSRunLoop mainRunLoop] addTimer:self.runtimeTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self.runtimeTimer invalidate]; self.runtimeTimer = nil;
+}
+
+- (void)dealloc {
+    [self.runtimeTimer invalidate];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)runtimeChanged:(NSNotification *)notification {
+    if (!self.isViewLoaded || !self.view.window) return;
+    if (self.tableView.numberOfSections > 0)
+        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0 inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return self.model.count; }
@@ -85,7 +119,7 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) {
-        return @"引擎运行状态无法仅凭日志确认。RootHide 可能隐藏注入目录；请在 Sileo 查看引擎是否已安装。";
+        return @"运行中表示刚刚收到引擎应答，不需要打开写日志。未收到应答时，可在 Sileo 确认引擎版本与安装状态。";
     }
     if (section == 1) return @"关闭后完全恢复系统原样。";
     if (section == 2) return @"优先级：主题遮罩图 → 自定义圆角 → 系统形状。两个开关都关着 = 保持现在这样。";
@@ -172,7 +206,7 @@
             cell.accessoryType = UITableViewCellAccessoryNone;
             NSString *st = [TBEngineInstaller runtimeState];
             cell.detailTextLabel.text = st;
-            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            cell.detailTextLabel.textColor = [st isEqualToString:@"运行中"] ? [UIColor systemGreenColor] : [UIColor secondaryLabelColor];
         }
         if ([row[@"act"] isEqualToString:@"respring"]) {
             cell.accessoryType = UITableViewCellAccessoryNone;

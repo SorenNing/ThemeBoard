@@ -1,5 +1,6 @@
 #import "TBStatusController.h"
 #import "TBPrefs.h"
+#import "TBEngineInstaller.h"
 #import "TBThemeScanner.h"
 #import "TBTheme.h"
 #import "TBGlass.h"
@@ -47,6 +48,7 @@ static NSString *TBDeviceModelName(void) {
 @property (nonatomic, strong) NSString *logText;
 @property (nonatomic, strong) NSString *engineState;
 @property (nonatomic, strong) NSString *engineDetail;
+@property (nonatomic, strong) NSTimer *runtimeTimer;
 @end
 
 /// 容错读取：文件里只要有一个坏字节，UTF-8 整体解码就会返回 nil。
@@ -94,6 +96,7 @@ static NSString *TBReadLogLossy(NSString *path) {
         [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"]
                                          style:UIBarButtonItemStylePlain
                                         target:self action:@selector(refresh)];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(runtimeChanged:) name:TBEngineRuntimeStateDidChangeNotification object:nil];
     [self refresh];
 }
 
@@ -102,36 +105,50 @@ static NSString *TBReadLogLossy(NSString *path) {
     [self refresh];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self.runtimeTimer invalidate];
+    __weak TBStatusController *weakSelf = self;
+    self.runtimeTimer = [NSTimer timerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *timer) {
+        TBStatusController *owner = weakSelf;
+        if (!owner || !owner.view.window) { [timer invalidate]; return; }
+        [TBEngineInstaller refreshRuntimeState];
+        [owner runtimeChanged:nil];
+    }];
+    self.runtimeTimer.tolerance = 0.3;
+    [[NSRunLoop mainRunLoop] addTimer:self.runtimeTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self.runtimeTimer invalidate];
+    self.runtimeTimer = nil;
+}
+
+- (void)dealloc {
+    [self.runtimeTimer invalidate];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)runtimeChanged:(NSNotification *)notification {
+    if (!self.isViewLoaded || !self.view.window) return;
+    self.engineState = [TBEngineInstaller runtimeState];
+    self.engineDetail = [TBEngineInstaller runtimeDetail];
+    if (self.table.numberOfSections > 0)
+        [self.table reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0 inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
+}
+
 - (NSString *)logPath {
-    // 只用这个路径（引擎就写在这里，实测 6.4MB、实时更新）
     return @"/var/mobile/Library/ThemeBoard/engine.log";
 }
 
 - (void)refresh {
     NSMutableString *out = [NSMutableString string];
 
-    // 日志时间只能表明最近有写入；其他进程也可能写日志，不能据此断定引擎是否运行。
+    [TBEngineInstaller refreshRuntimeState];
+    self.engineState = [TBEngineInstaller runtimeState];
+    self.engineDetail = [TBEngineInstaller runtimeDetail];
     NSString *path = @"/var/mobile/Library/ThemeBoard/engine.log";
-    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL];
-    if (!attrs) {
-        NSString *alt = @"/var/jb/var/mobile/Library/ThemeBoard/engine.log";
-        NSDictionary *a2 = [[NSFileManager defaultManager] attributesOfItemAtPath:alt error:NULL];
-        if (a2) { path = alt; attrs = a2; }
-    }
-    NSDate *mtime = attrs[NSFileModificationDate];
-    NSTimeInterval age = mtime ? -[mtime timeIntervalSinceNow] : -1;
-
-    self.engineState = @"运行状态未知";
-    if (!attrs) {
-        self.engineDetail = @"没有引擎日志，不能判断运行状态";
-    } else if (age < 0) {
-        self.engineDetail = @"日志时间异常，不能判断运行状态";
-    } else if (age < 180) {
-        self.engineDetail = [NSString stringWithFormat:@"日志 %.0f 秒前更新（仅供参考）", age];
-    } else {
-        self.engineDetail = [NSString stringWithFormat:@"日志 %.0f 分钟前更新（仅供参考）", age / 60];
-    }
-
     NSString *log = TBReadLogLossy(path);
     if (!log.length) {
         for (NSString *a in @[@"/var/jb/var/mobile/Library/ThemeBoard/engine.log",

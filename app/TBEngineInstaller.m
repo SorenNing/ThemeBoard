@@ -2,11 +2,54 @@
 #import <UIKit/UIKit.h>
 #import <spawn.h>
 #import <sys/wait.h>
+#import <notify.h>
+#import <QuartzCore/QuartzCore.h>
 
 extern char **environ;
 
 static NSString *const kDylibName = @"ThemeBoardEngine.dylib";
 static NSString *const kPlistName = @"ThemeBoardEngine.plist";
+
+#pragma mark - 实时运行状态（Darwin 通知请求/应答，不写文件）
+NSString *const TBEngineRuntimeStateDidChangeNotification = @"TBEngineRuntimeStateDidChange";
+static const char *kRuntimeRequest = "com.ning.themeboard.runtime.request";
+static const char *kRuntimeReply = "com.ning.themeboard.runtime.reply";
+static int gRuntimeRequestToken = NOTIFY_TOKEN_INVALID;
+static int gRuntimeReplyToken = NOTIFY_TOKEN_INVALID;
+static uint64_t gRuntimeNonce;
+static CFTimeInterval gRuntimeLastReply;
+static BOOL gRuntimeAttempted;
+static BOOL gRuntimeUnavailable;
+
+static void TBRuntimeChanged(void) {
+    [[NSNotificationCenter defaultCenter] postNotificationName:TBEngineRuntimeStateDidChangeNotification object:nil];
+}
+
+static void TBRuntimeSetup(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        uint32_t rc = notify_register_check(kRuntimeRequest, &gRuntimeRequestToken);
+        if (rc == NOTIFY_STATUS_OK) {
+            rc = notify_register_dispatch(kRuntimeReply, &gRuntimeReplyToken, dispatch_get_main_queue(), ^(int token) {
+                uint64_t reply = 0;
+                if (!gRuntimeNonce || notify_get_state(token, &reply) != NOTIFY_STATUS_OK || reply != gRuntimeNonce) return;
+                gRuntimeLastReply = CACurrentMediaTime();
+                CFTimeInterval replyTime = gRuntimeLastReply;
+                gRuntimeNonce = 0;
+                TBRuntimeChanged();
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (gRuntimeLastReply == replyTime) TBRuntimeChanged();
+                });
+            });
+        }
+        if (rc != NOTIFY_STATUS_OK) {
+            gRuntimeUnavailable = YES;
+            if (gRuntimeRequestToken != NOTIFY_TOKEN_INVALID) notify_cancel(gRuntimeRequestToken);
+            if (gRuntimeReplyToken != NOTIFY_TOKEN_INVALID) notify_cancel(gRuntimeReplyToken);
+            gRuntimeRequestToken = gRuntimeReplyToken = NOTIFY_TOKEN_INVALID;
+        }
+    });
+}
 
 @implementation TBEngineInstaller
 
@@ -27,9 +70,48 @@ static NSString *const kPlistName = @"ThemeBoardEngine.plist";
     return nil;
 }
 
+// 查询是异步的，不阻塞页面/主线程；超时只表示没有应答。
++ (void)refreshRuntimeState {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self refreshRuntimeState]; });
+        return;
+    }
+    if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+    TBRuntimeSetup();
+    if (gRuntimeUnavailable || gRuntimeNonce) return;
+    uint64_t nonce = 0;
+    do { arc4random_buf(&nonce, sizeof(nonce)); } while (nonce == 0);
+    gRuntimeNonce = nonce;
+    gRuntimeAttempted = YES;
+    uint32_t rc = notify_set_state(gRuntimeRequestToken, nonce);
+    if (rc == NOTIFY_STATUS_OK) rc = notify_post(kRuntimeRequest);
+    if (rc != NOTIFY_STATUS_OK) {
+        gRuntimeNonce = 0;
+        gRuntimeUnavailable = YES;
+        TBRuntimeChanged();
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (gRuntimeNonce != nonce) return;
+        gRuntimeNonce = 0;
+        gRuntimeLastReply = 0;
+        TBRuntimeChanged();
+    });
+}
+
 + (NSString *)runtimeState {
-    // 注入目录可能被隐藏；仅凭最近日志无法判断当前是否在运行。
-    return [self isInstalled] ? @"已安装·运行状态未知" : @"运行状态未知";
+    if (gRuntimeLastReply > 0 && CACurrentMediaTime() - gRuntimeLastReply < 5.0) return @"运行中";
+    if (gRuntimeUnavailable) return @"状态通道不可用";
+    if (gRuntimeNonce) return @"检测中";
+    return gRuntimeAttempted ? @"未收到应答" : @"运行状态未知";
+}
+
++ (NSString *)runtimeDetail {
+    if ([[self runtimeState] isEqualToString:@"运行中"]) return @"SpringBoard 引擎已实时应答，与写日志开关无关";
+    if (gRuntimeUnavailable) return @"无法注册实时通知通道，运行状态未知";
+    if (gRuntimeNonce) return @"正在等待 SpringBoard 引擎应答";
+    if (gRuntimeAttempted) return @"引擎尚未应答；旧版引擎或通知受限也会如此";
+    return @"等待实时检测，不使用日志文件判断存活";
 }
 
 + (BOOL)isInstalled {
