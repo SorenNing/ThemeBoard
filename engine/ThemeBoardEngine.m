@@ -2236,6 +2236,9 @@ static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
 /// 老签名 imageForIcon:options: 接不到 → 动画期露出原图。这里同样在**缓存写入端**接管。
 static id tb_imageForIconApp(id self, SEL _cmd, id icon, id appearance, unsigned long long opt) {
     TBRemember(self);
+    // ★ 1.46：进/退 App 的形变走这条「带 imageAppearance」的读端。以前只接管写端，
+    //   缓存里没有这张外观变体（深色外观 = 系统黑底图）时就直通 → 悬浮 Dock 常驻区闪原图。
+    { UIImage *m = TBServeReadSide(self, icon); if (m) return m; }
     id r = o_imageForIconApp ? o_imageForIconApp(self, _cmd, icon, appearance, opt) : nil;
     if (!gSystemMaskTemplate && !TBActiveTheme().length && [r isKindOfClass:[UIImage class]]) TBLearnSystemMask(r);
     return r;
@@ -2841,6 +2844,27 @@ static id tb_imgTO(id self, SEL _cmd, TBImageInfo info, id tc, unsigned long lon
     UIImage *m = TBThemedForIconObject(self);
     if (m) { TBLogOnce(@"modern|to", @"现代取图 to 已接管"); return m; }
     return o_imgTO ? o_imgTO(self, _cmd, info, tc, opt) : nil;
+}
+
+// ★ 1.46：退出/进入 App 的形变（图标缩放 / SBIconImageCrossfadeView）取的是 SBIcon 的
+//   「方形原图」squareContentsImage —— 它是未被主题接管的（我们只挂过 SBLiveIconImageView
+//   上同名方法给时钟用）。系统原实现返回未遮罩素材，深色外观下就是那块黑底图 →
+//   悬浮 Dock 常驻区在退出动画里闪原图。这里把它也换成主题图。
+typedef id (*SquareContentsFn)(id, SEL);
+static SquareContentsFn o_squareContentsIcon = NULL;
+
+static id tb_squareContentsIcon(id self, SEL _cmd) {
+    if (TBEnabled() && !TBSafeMode() && TBApplyIconForDesktop()) {
+        @try {
+            NSString *bid = TBBIDFromIcon(self);
+            UIImage *m = bid.length ? TBImageForBundle(bid) : nil;
+            if (m) {
+                TBLogOnce([@"sqc|" stringByAppendingString:bid], @"方形原图接管 %@", bid);
+                return m;
+            }
+        } @catch (NSException *e) { }
+    }
+    return o_squareContentsIcon ? o_squareContentsIcon(self, _cmd) : nil;
 }
 
 /// 批量刷新时对登记过的图标视图设置或清理本引擎的 override，
@@ -4736,6 +4760,16 @@ static void TBInstall(void) {
             if (!gDoneModernTO && TBHasMethod(ic, @"iconImageWithInfo:traitCollection:options:")) {
                 gDoneModernTO = YES;
                 o_imgTO = (FnImgTO)TBHook(ic, @"iconImageWithInfo:traitCollection:options:", (IMP)tb_imgTO, "现代取图 to");
+            }
+            // ★ 1.46：进退 App 形变动画的方形原图通道（挂真正声明它的那个类，避免自递归）
+            static BOOL gDoneSquareContents = NO;
+            if (!gDoneSquareContents) {
+                Class sqDecl = TBClassDeclaring(ic, NSSelectorFromString(@"squareContentsImage"));
+                if (sqDecl) {
+                    gDoneSquareContents = YES;
+                    o_squareContentsIcon = (SquareContentsFn)TBHook(sqDecl, @"squareContentsImage",
+                                                                    (IMP)tb_squareContentsIcon, "方形原图(进退动画)");
+                }
             }
         }
     }
