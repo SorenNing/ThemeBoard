@@ -26,6 +26,7 @@ typedef struct {
 #pragma mark - 状态
 
 static BOOL gIsPrimary = NO;      // 只有 SpringBoard 类进程写日志文件，避免多进程互相咬行
+static NSMutableDictionary<NSString *, UIImage *> *gFitCache;   // 已按尺寸适配过的图（避免每次调用都重画）
 static NSHashTable *gSeenIconViews = nil;          // 0.18.20：登记见过的 SBIconView（弱引用）
 static UIImage *TBThemedForIconObject(id icon);    // 0.18.20：前置声明（定义在后面）
 static dispatch_queue_t gLogQueue;
@@ -33,7 +34,6 @@ static NSMutableDictionary<NSString *, NSString *> *gIndex;
 static NSString *gIndexTheme;
 static NSHashTable *gCaches;   // 缓存对象弱引用；批次快照持有存活对象
 static NSCache *gImageCache;      // 已生成的图标缓存
-static NSMutableDictionary *gFitCache;   // 已按尺寸适配过的图（避免每次调用都重画）
 static NSMutableDictionary<NSString *, NSString *> *gBundleRes;   // 文件名 -> Bundles 里的路径
 static NSLock *gLock;
 
@@ -463,8 +463,7 @@ typedef struct { CGSize size; double scale; double ratio; } TBInfo;
 typedef TBInfo (*TBInfoFn)(id, SEL);
 
 /// 把主题图缩放成系统期望的尺寸（关键：否则会因 size 不匹配把 SpringBoard 弄崩）
-static NSMutableDictionary<NSString *, UIImage *> *gFitCache;
-
+/// gFitCache 在文件前段已声明为 NSMutableDictionary<NSString *, UIImage *>，此处不再重复声明。
 static UIImage *TBFitImage(UIImage *img, TBInfo info) {
     if (!img) return nil;
     CGSize pt = info.size;
@@ -2437,6 +2436,8 @@ static LayoutFn o_iconViewLayout;
 static char kTBAppliedImageKey;
 static char kTBAppliedSourceKey;
 static char kTBOverrideImageKey;
+static char kTBCrossfadeProxyKey;
+static char kTBCrossfadeOwnerKey;
 static int gHealDepth = 0;
 
 /// 在子视图里找第一个能 setImage: 的 UIImageView（用于 App 资源库的 pod 视图）
@@ -2865,6 +2866,201 @@ static id tb_squareContentsIcon(id self, SEL _cmd) {
         } @catch (NSException *e) { }
     }
     return o_squareContentsIcon ? o_squareContentsIcon(self, _cmd) : nil;
+}
+
+/// 悬浮 Dock 的过渡图兼容。SBIconImageCrossfadeView 在进/退 App 时先把源图层置零、
+/// 再用自己的 proxy 层贴原图 → 我们提前在 proxy 里贴主题图，首帧就不再闪系统原图。
+/// 只把载体换成主题图，不改任何转场几何/时机；老设备如果类/签名不匹配则跳过，
+/// 保留系统原实现。
+typedef id (*TBCrossfadeObjectFn)(id, SEL);
+typedef void (*TBCrossfadeVoidFn)(id, SEL);
+typedef void (*TBCrossfadeFractionFn)(id, SEL, CGFloat);
+static TBCrossfadeVoidFn o_crossfadePrepare;
+static TBCrossfadeFractionFn o_crossfadeFade;
+static TBCrossfadeVoidFn o_crossfadeCleanup;
+static BOOL gDoneCrossfade;
+static __thread unsigned int gCrossfadeDepth;
+static NSHashTable *gCrossfadeStates;
+
+static void TBCrossfadeDetach(CALayer *source, CALayer *proxy, float opacity) {
+    if (!source && !proxy) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    @try {
+        // 本引擎只写过 0；若系统已设置新的非零透明度，保留系统最新值。
+        if (source && source.opacity == 0.0f) source.opacity = opacity;
+        [proxy removeFromSuperlayer];
+    } @finally { [CATransaction commit]; }
+}
+
+@interface TBCrossfadeState : NSObject
+@property (nonatomic, strong) CALayer *source;
+@property (nonatomic, strong) CALayer *proxy;
+@property (nonatomic, weak) UIView *imageView;
+@property (nonatomic, strong) UIImage *image;
+@property (nonatomic) float nativeOpacity;
+@property (nonatomic) BOOL active;
+@end
+@implementation TBCrossfadeState
+- (void)restore {
+    if (!self.active) return;
+    self.active = NO;
+    TBCrossfadeDetach(self.source, self.proxy, self.nativeOpacity);
+}
+- (void)dealloc {
+    if (!_active) return;
+    CALayer *source = _source, *proxy = _proxy;
+    float opacity = _nativeOpacity;
+    if ([NSThread isMainThread]) TBCrossfadeDetach(source, proxy, opacity);
+    else dispatch_async(dispatch_get_main_queue(), ^{ TBCrossfadeDetach(source, proxy, opacity); });
+}
+@end
+
+static UIView *TBCrossfadeImageView(id crossfade) {
+    if (![crossfade isKindOfClass:[UIView class]]) return nil;
+    SEL getter = NSSelectorFromString(@"iconImageView");
+    if (![crossfade respondsToSelector:getter]) return nil;
+    id iv = ((TBCrossfadeObjectFn)objc_msgSend)(crossfade, getter);
+    return [iv isKindOfClass:[UIView class]] ? iv : nil;
+}
+
+static void TBCrossfadeRestore(id crossfade) {
+    TBCrossfadeState *state = objc_getAssociatedObject(crossfade, &kTBCrossfadeProxyKey);
+    [state restore];
+    objc_setAssociatedObject(crossfade, &kTBCrossfadeProxyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void TBCrossfadeRestoreAll(void) {
+    // 仅由主线程的主题切换批次调用。
+    for (TBCrossfadeState *state in gCrossfadeStates.allObjects) [state restore];
+    [gCrossfadeStates removeAllObjects];
+}
+
+static void TBCrossfadeInstallProxy(id crossfade) {
+    if (!TBEnabled() || TBSafeMode() || !TBActiveTheme().length) return;
+    UIView *iv = TBCrossfadeImageView(crossfade);
+    if (!iv || ![iv isDescendantOfView:crossfade]) return;
+    SEL iconGetter = NSSelectorFromString(@"icon");
+    SEL squareGetter = NSSelectorFromString(@"squareContentsImage");
+    if (![iv respondsToSelector:iconGetter] || ![iv respondsToSelector:squareGetter]) return;
+    id icon = ((TBCrossfadeObjectFn)objc_msgSend)(iv, iconGetter);
+    NSString *bid = TBBIDFromIcon(icon);
+    // 实时时钟保留原合成图/指针，不用静态主题底图盖住它。
+    if (!bid.length || [bid isEqualToString:@"com.apple.mobiletimer"]) return;
+    id original = ((TBCrossfadeObjectFn)objc_msgSend)(iv, squareGetter);
+    if (![original isKindOfClass:[UIImage class]] || ![(UIImage *)original CGImage]) return;
+    UIImage *native = original;
+    if (!isfinite(native.size.width) || !isfinite(native.size.height) ||
+        native.size.width < 1 || native.size.height < 1 ||
+        native.size.width > 512 || native.size.height > 512) return;
+    UIImage *image = TBImageForBundle(bid);
+    if (!image) return;
+    TBInfo info = { native.size, native.scale > 0.5 ? native.scale : 3.0, 0 };
+    image = TBFitCached(image, info, [@"transition|" stringByAppendingString:bid]);
+    if (!image.CGImage) return;
+    CALayer *container = ((UIView *)crossfade).layer;
+    CALayer *source = iv.layer;
+    CGRect frame = [iv convertRect:iv.bounds toView:crossfade];
+    if (!source.contents || !isfinite(frame.origin.x) || !isfinite(frame.origin.y) ||
+        !isfinite(frame.size.width) || !isfinite(frame.size.height) || frame.size.width < 1 || frame.size.height < 1 ||
+        !CATransform3DIsAffine(source.transform) || fabs(iv.transform.b) > 0.0001 || fabs(iv.transform.c) > 0.0001) return;
+    NSHashTable *owners = objc_getAssociatedObject(source, &kTBCrossfadeOwnerKey);
+    TBCrossfadeState *owner = owners.anyObject;
+    if (owner.active) return; // 同一源图层不可同时被两段转场隐藏。
+    TBCrossfadeState *state = [TBCrossfadeState new];
+    state.source = source; state.imageView = iv; state.image = image;
+    state.nativeOpacity = source.opacity;
+    state.proxy = [CALayer layer];
+    owners = [NSHashTable weakObjectsHashTable]; [owners addObject:state];
+    objc_setAssociatedObject(source, &kTBCrossfadeOwnerKey, owners, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(crossfade, &kTBCrossfadeProxyKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gCrossfadeStates) gCrossfadeStates = [NSHashTable weakObjectsHashTable];
+    [gCrossfadeStates addObject:state];
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    @try {
+        CALayer *proxy = state.proxy;
+        proxy.name = @"com.ning.themeboard.transition";
+        proxy.frame = frame;
+        proxy.contents = (__bridge id)image.CGImage;
+        proxy.contentsScale = image.scale;
+        proxy.contentsGravity = source.contentsGravity;
+        proxy.contentsRect = source.contentsRect; proxy.contentsCenter = source.contentsCenter;
+        proxy.minificationFilter = source.minificationFilter; proxy.magnificationFilter = source.magnificationFilter;
+        proxy.cornerRadius = source.cornerRadius; proxy.masksToBounds = source.masksToBounds;
+        proxy.opacity = source.opacity; proxy.hidden = source.hidden;
+        [container addSublayer:proxy];
+        state.active = YES;
+        source.opacity = 0.0f;
+    } @finally { [CATransaction commit]; }
+}
+
+static void tb_crossfadePrepare(id self, SEL _cmd) {
+    if (![NSThread isMainThread] || gCrossfadeDepth) { if (o_crossfadePrepare) o_crossfadePrepare(self, _cmd); return; }
+    gCrossfadeDepth++;
+    @try {
+        @try { TBCrossfadeRestore(self); } @catch (NSException *e) { }
+        if (o_crossfadePrepare) o_crossfadePrepare(self, _cmd);
+        @try { TBCrossfadeInstallProxy(self); } @catch (NSException *e) { TBCrossfadeRestore(self); }
+    } @finally { gCrossfadeDepth--; }
+}
+static void tb_crossfadeFade(id self, SEL _cmd, CGFloat fraction) {
+    if (![NSThread isMainThread] || gCrossfadeDepth) { if (o_crossfadeFade) o_crossfadeFade(self, _cmd, fraction); return; }
+    gCrossfadeDepth++;
+    @try {
+        TBCrossfadeState *state = objc_getAssociatedObject(self, &kTBCrossfadeProxyKey);
+        @try {
+            BOOL valid = state.active &&
+                state.imageView == TBCrossfadeImageView(self) &&
+                TBEnabled() && !TBSafeMode();
+            if (state && !valid) { TBCrossfadeRestore(self); state = nil; }
+            // 原实现每次看到的都是上次的原生透明度，不能把我们写入的 0 当作下一帧输入。
+            if (state.active) { [CATransaction begin]; [CATransaction setDisableActions:YES]; state.source.opacity = state.nativeOpacity; [CATransaction commit]; }
+        } @catch (NSException *e) { TBCrossfadeRestore(self); state = nil; }
+        if (o_crossfadeFade) o_crossfadeFade(self, _cmd, fraction);
+        if (!state.active) return;
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        @try {
+            state.nativeOpacity = state.source.opacity;
+            state.proxy.opacity = state.nativeOpacity; state.proxy.hidden = state.source.hidden;
+            state.source.opacity = 0.0f;
+        } @finally { [CATransaction commit]; }
+    } @finally { gCrossfadeDepth--; }
+}
+static void tb_crossfadeCleanup(id self, SEL _cmd) {
+    @try { if ([NSThread isMainThread]) TBCrossfadeRestore(self); } @catch (NSException *e) { }
+    if (![NSThread isMainThread]) {
+        TBCrossfadeState *state = objc_getAssociatedObject(self, &kTBCrossfadeProxyKey);
+        dispatch_async(dispatch_get_main_queue(), ^{ [state restore]; });
+    }
+    if (o_crossfadeCleanup) o_crossfadeCleanup(self, _cmd);
+}
+
+static BOOL TBCrossfadeMethodMatches(Class cls, NSString *name, const char *type) {
+    Method method = class_getInstanceMethod(cls, NSSelectorFromString(name));
+    return method && strcmp(method_getTypeEncoding(method), type) == 0;
+}
+static void TBInstallCrossfadeHooks(void) {
+    if (gDoneCrossfade || ![[NSProcessInfo processInfo].processName isEqualToString:@"SpringBoard"]) return;
+    Class cls = NSClassFromString(@"SBIconImageCrossfadeView");
+    Class iv = NSClassFromString(@"SBIconImageView");
+    if (!cls || !iv || ![cls isSubclassOfClass:[UIView class]] || ![iv isSubclassOfClass:[UIView class]]) return;
+    // 来自已读参考源码的 ABI；不符时保留系统原实现。
+    if (!TBCrossfadeMethodMatches(cls, @"prepareGeometry", "v16@0:8") ||
+        !TBCrossfadeMethodMatches(cls, @"setSourceFadeFraction:", "v24@0:8d16") ||
+        !TBCrossfadeMethodMatches(cls, @"cleanup", "v16@0:8") ||
+        !TBCrossfadeMethodMatches(cls, @"iconImageView", "@16@0:8") ||
+        !TBCrossfadeMethodMatches(iv, @"icon", "@16@0:8") ||
+        !TBCrossfadeMethodMatches(iv, @"squareContentsImage", "@16@0:8")) return;
+    // 若方法继承自父类，先在目标类物化槽位，避免 method_setImplementation 改到父类。
+    for (NSString *name in @[@"prepareGeometry", @"setSourceFadeFraction:", @"cleanup"]) {
+        SEL selector = NSSelectorFromString(name);
+        Method method = class_getInstanceMethod(cls, selector);
+        class_addMethod(cls, selector, method_getImplementation(method), method_getTypeEncoding(method));
+    }
+    gDoneCrossfade = YES; // TBInstall 会重试；必须在任何替换前置位。
+    o_crossfadePrepare = (TBCrossfadeVoidFn)TBHook(cls, @"prepareGeometry", (IMP)tb_crossfadePrepare, "Dock crossfade.prepare");
+    o_crossfadeFade = (TBCrossfadeFractionFn)TBHook(cls, @"setSourceFadeFraction:", (IMP)tb_crossfadeFade, "Dock crossfade.fade");
+    o_crossfadeCleanup = (TBCrossfadeVoidFn)TBHook(cls, @"cleanup", (IMP)tb_crossfadeCleanup, "Dock crossfade.cleanup");
 }
 
 /// 批量刷新时对登记过的图标视图设置或清理本引擎的 override，
@@ -4774,6 +4970,9 @@ static void TBInstall(void) {
         }
     }
 
+    // SBIconImageCrossfadeView 进退 App 转场代理层（只换主题图，不改转场行为）
+    TBInstallCrossfadeHooks();
+
     // SBIconView -layoutSubviews（自愈校验：图不对才贴，收敛后不再触发）
     Class iconViewCls2 = NSClassFromString(@"SBIconView");
     if (iconViewCls2 && !gDoneLayout && TBHasMethod(iconViewCls2, @"layoutSubviews")) {
@@ -5225,6 +5424,8 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
             gBadgeThemeImgCacheTheme = nil;
         });
 
+        // 主题切换先撤掉转场代理，避免旧主题 proxy 残留在 Dock 图层。
+        TBCrossfadeRestoreAll();
         NSArray *icons = TBAllIcons();
         NSArray *cacheList = caches;
 
