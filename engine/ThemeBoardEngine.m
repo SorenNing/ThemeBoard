@@ -2601,18 +2601,8 @@ static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
                     [st appendString:@"setIcon.none "];
                 }
             }
-            // 只给时钟这一个视图硬贴一次表盘（其他图标不动）。
-            // 系统缓存不会自己重算，这是本机唯一能让表盘立刻跟着主题变的手段。
-            {
-                UIImage *face = TBClockMaterialFace((UIView *)v);
-                if (face && face.CGImage) {
-                    ((UIView *)v).layer.contents = (__bridge id)face.CGImage;
-                    @try { [v setValue:face forKey:@"mappedContentsImage"]; } @catch (NSException *e) { }
-                    ((UIView *)v).layer.contentsGravity = kCAGravityResize;
-                    [(UIView *)v setNeedsDisplay];
-                    [st appendString:@"faceWrite "];
-                }
-            }
+            // 不直接写 layer.contents；表盘只通过 contentsImage/squareContentsImage 输入。
+            // 这样系统自己的指针合成、缓存生命周期和恢复默认路径保持完整。
             // 方案 D：用系统自己的"图标图已更新"回调逼它重算合成图
             {
                 id ic = nil;
@@ -2630,16 +2620,6 @@ static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
                     ((void (*)(id, SEL, id, id))objc_msgSend)(
                         v, NSSelectorFromString(@"iconImageCache:didUpdateImageForIcon:"), cache, ic);
                     [st appendString:@"cacheDidUpdate "];
-                }
-            }
-            // 最后三个候选（方法表里有、我们还没试过）
-            if (!TBClockMaterialFace((UIView *)v)) {
-                // 无素材/恢复默认：试着让系统把"已显示的图"清掉、自己重画
-                if ([v respondsToSelector:NSSelectorFromString(@"setDisplayedImage:")]) {
-                    @try {
-                        ((void (*)(id, SEL, id))objc_msgSend)(v, NSSelectorFromString(@"setDisplayedImage:"), nil);
-                        [st appendString:@"setDisplayedImage(nil) "];
-                    } @catch (NSException *e) { }
                 }
             }
             if ([v respondsToSelector:NSSelectorFromString(@"updateUnanimated")]) {
@@ -4593,6 +4573,14 @@ static UIImage *TBClockRoundedFace(UIImage *img) {
 /// （按图标圆角遮罩好），没有就返回 nil，让调用方走系统原实现。
 /// 注意：不走 IconBundles 的静态图标；静态图标只在列表/快照里用，不参与实时时钟。
 static UIImage *TBClockMaterialFace(UIView *v) {
+    if (!v) return nil;
+    static NSCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [[NSCache alloc] init]; cache.countLimit = 8; });
+    NSString *key = [NSString stringWithFormat:@"%@|%.0fx%.0f|%.1f", TBActiveTheme() ?: @"",
+                     v.bounds.size.width, v.bounds.size.height, [UIScreen mainScreen].scale];
+    UIImage *ready = [cache objectForKey:key];
+    if (ready) return ready;
     UIImage *face = TBResourceImage(@"ClockIconBackgroundSquare");
     if (!face) return nil;
     CGFloat sc = [UIScreen mainScreen].scale;
@@ -4602,7 +4590,9 @@ static UIImage *TBClockMaterialFace(UIView *v) {
     info.scale = sc;
     info.ratio = 0;
     if (info.size.width < 1 || info.size.height < 1) info.size = CGSizeMake(64, 64);
-    return TBClockRoundedFace(TBFitImage(face, info));
+    UIImage *out = TBClockRoundedFace(TBFitImage(face, info));
+    if (out) [cache setObject:out forKey:key];
+    return out;
 }
 
 static id tb_clockContentsImage(id self, SEL _cmd) {
@@ -4665,18 +4655,7 @@ static void TBInstallClockContentsHooks(void) {
     Class c2 = TBClassDeclaring(live, NSSelectorFromString(@"squareContentsImage"));
     if (c2) o_squareContentsImageLive = (ContentsImgFn)TBHook(c2, @"squareContentsImage",
                                                               (IMP)tb_clockSquareContentsImage, "时钟squareContents");
-    // 指针：SnowBoard 同款 makeImageSetForMetrics: 注入（主题有的才替换）
-    Class clock = NSClassFromString(@"SBHClockApplicationIconImageView");
-    if (clock) {
-        if (TBHasMethod(clock, @"makeImageSetForMetrics:")) {
-            o_makeImageSet = (ClockImageSetFn)TBHookClass(clock, @"makeImageSetForMetrics:",
-                                                          (IMP)tb_makeImageSet, "时钟图像集");
-        }
-        if (TBHasMethod(clock, @"imageSetForMetrics:")) {
-            o_imageSet = (ClockImageSetFn)TBHookClass(clock, @"imageSetForMetrics:",
-                                                      (IMP)tb_imageSet, "时钟图像集2");
-        }
-    }
+    // 指针与中心点完全交回系统，不再注入主题针集。
 }
 
 static BOOL gDoneSpecifier = NO;
