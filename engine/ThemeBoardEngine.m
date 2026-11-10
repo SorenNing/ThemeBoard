@@ -34,6 +34,7 @@ static NSMutableDictionary<NSString *, NSString *> *gIndex;
 static NSString *gIndexTheme;
 static NSHashTable *gCaches;   // 缓存对象弱引用；批次快照持有存活对象
 static NSCache *gImageCache;      // 已生成的图标缓存
+static NSCache *gClockFaceCache;  // 当前主题表盘成品缓存，换主题时清空
 static NSMutableDictionary<NSString *, NSString *> *gBundleRes;   // 文件名 -> Bundles 里的路径
 static NSLock *gLock;
 
@@ -295,6 +296,8 @@ static UIImage *TBMatchSystemGeometry(UIImage *img, UIImage *sys);
 static UIImage *TBImageForBundle(NSString *bid);      // 前置：时钟判定要用
 static UIImage *TBClockRoundedFace(UIImage *img);
 static UIImage *TBClockMaterialFace(UIView *v);
+static void TBClockClearMappedContents(UIView *v);
+static void TBClockInvalidateCache(void);
 static UIImage *TBKeyOutCornerColor(UIImage *img);
 
 /// 素材是否带透明像素（粗略判断：抽样看有没有 alpha 明显偏低的像素）
@@ -2545,6 +2548,7 @@ static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
     // 只在【这一个时钟视图】上做，对整棵视图树调用会崩。
     if ([vcls rangeOfString:@"Clock"].location != NSNotFound) {
         @try {
+            TBClockClearMappedContents(v);
             TBLogOnce([@"clockrefresh|" stringByAppendingString:vcls], @"时钟视图重画 %@", vcls);
             NSMutableString *st = [NSMutableString string];
             SEL iconSel = NSSelectorFromString(@"icon");
@@ -3684,6 +3688,7 @@ static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
     }
     UIImage *sys0 = o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
     UIImage *img = TBMatchSystemGeometry(TBResourceImage(name), sys0);
+    if (img && [name hasPrefix:@"ClockIconBackground"]) img = TBClockRoundedFace(img);
     if (img) {
         gServe++;
         if (name.length < 48) TBLogOnce([@"res2|" stringByAppendingString:name.lowercaseString],
@@ -3702,6 +3707,7 @@ static UIImage *tb_imageNamedInBundle(id self, SEL _cmd, NSString *name, NSBundl
     }
     UIImage *sys = o_imageNamedInBundle ? o_imageNamedInBundle(self, _cmd, name, bundle) : nil;
     UIImage *img = TBMatchSystemGeometry(TBResourceImage(name), sys);
+    if (img && [name hasPrefix:@"ClockIconBackground"]) img = TBClockRoundedFace(img);
     if (img) {
         gServe++;
         if (name.length < 48) TBLogOnce([@"res2|" stringByAppendingString:name.lowercaseString],
@@ -4564,22 +4570,31 @@ static BOOL TBIsClockView(id v) {
 /// layer.contents 的话，四角不透明就会露出方块（就是「时不时变成方的」）。
 /// 形状规则与图标完全一致（① 主题遮罩图 → ② 自定义圆角 → ③ 系统形状 → 兜底）
 static UIImage *TBClockRoundedFace(UIImage *img) {
-    // 表盘不做"已圆角就跳过"排查：表盘素材经常自带透明圆角，跳过的话
-    // 写进 layer.contents 就会露出透明角（这点和图标不同）
-    return TBApplyIconShape(img, NO);
+    // 表盘与普通图标统一走形状、玻璃叠加和阴影；不写 layer.contents。
+    UIImage *shaped = TBApplyIconShape(img, NO);
+    return TBApplyIconEffects(shaped) ?: shaped;
 }
 
 /// 时钟表盘：SnowBoard 的做法 —— 主题 Bundles 里有 ClockIconBackgroundSquare 就用它
 /// （按图标圆角遮罩好），没有就返回 nil，让调用方走系统原实现。
 /// 注意：不走 IconBundles 的静态图标；静态图标只在列表/快照里用，不参与实时时钟。
+static void TBClockInvalidateCache(void) {
+    [gClockFaceCache removeAllObjects];
+}
+
+static void TBClockClearMappedContents(UIView *v) {
+    if (!v) return;
+    @try { [v setValue:nil forKey:@"mappedContentsImage"]; } @catch (NSException *e) { }
+    @try { [v setValue:nil forKey:@"squareMappedContentsImage"]; } @catch (NSException *e) { }
+}
+
 static UIImage *TBClockMaterialFace(UIView *v) {
     if (!v) return nil;
-    static NSCache *cache;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ cache = [[NSCache alloc] init]; cache.countLimit = 8; });
+    dispatch_once(&once, ^{ gClockFaceCache = [[NSCache alloc] init]; gClockFaceCache.countLimit = 8; });
     NSString *key = [NSString stringWithFormat:@"%@|%.0fx%.0f|%.1f", TBActiveTheme() ?: @"",
                      v.bounds.size.width, v.bounds.size.height, [UIScreen mainScreen].scale];
-    UIImage *ready = [cache objectForKey:key];
+    UIImage *ready = [gClockFaceCache objectForKey:key];
     if (ready) return ready;
     UIImage *face = TBResourceImage(@"ClockIconBackgroundSquare");
     if (!face) return nil;
@@ -4591,7 +4606,7 @@ static UIImage *TBClockMaterialFace(UIView *v) {
     info.ratio = 0;
     if (info.size.width < 1 || info.size.height < 1) info.size = CGSizeMake(64, 64);
     UIImage *out = TBClockRoundedFace(TBFitImage(face, info));
-    if (out) [cache setObject:out forKey:key];
+    if (out) [gClockFaceCache setObject:out forKey:key];
     return out;
 }
 
@@ -4645,7 +4660,9 @@ static Class TBClassDeclaring(Class cls, SEL sel) {
 /// 安装：优先挂 SBLiveIconImageView（时钟视图的父类，SnowBoard 也是挂这里），
 /// 再兜底挂 SBIconImageView 的同名实现。
 static void TBInstallClockContentsHooks(void) {
-    Class live = NSClassFromString(@"SBLiveIconImageView");
+    // 时钟类自己声明这两个方法；优先直接钩专用类，避免父类已有缓存映射继续复用旧表盘。
+    Class live = NSClassFromString(@"SBHClockApplicationIconImageView");
+    if (!live) live = NSClassFromString(@"SBLiveIconImageView");
     if (!live) live = NSClassFromString(@"SBIconImageView");
     if (!live) { TBLog(@"contentsImage：找不到图标图片视图类"); return; }
     // contentsImage / squareContentsImage 都是实例方法（用 TBHook，不是 TBHookClass）
@@ -5364,6 +5381,7 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
     if (!allowPurge) TBLog(@"清缓存开关关闭：跳过逐个清缓存，仍执行图标重取");
 
     [gImageCache removeAllObjects];
+    TBClockInvalidateCache();
     // ★ 1.43（用户选 A：换主题后遮罩残留）：形状/特效类缓存也要跟着失效。
     //   gMaskThemeImg 按主题名缓存 → 同名主题重导素材时会命中旧值；
     //   gGlobalImgCache 是「全局效果成品」（按 bid+尺寸），不清就会把旧遮罩贴回去；
@@ -5403,8 +5421,20 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
             gBadgeThemeImgCacheTheme = nil;
         });
 
-        // 主题切换先撤掉转场代理，避免旧主题 proxy 残留在 Dock 图层。
+        // 主题切换先清理时钟内部映射缓存，再撤掉转场代理。
         TBCrossfadeRestoreAll();
+        NSMutableArray *clockViews = [NSMutableArray array];
+        for (UIView *w in [[UIApplication sharedApplication] windows]) {
+            NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
+            while (stack.count) {
+                UIView *vv = stack.lastObject; [stack removeLastObject];
+                if ([NSStringFromClass([vv class]) rangeOfString:@"Clock"].location != NSNotFound)
+                    [clockViews addObject:vv];
+                [stack addObjectsFromArray:vv.subviews];
+                if (stack.count > 12000) break;
+            }
+        }
+        for (UIView *cv in clockViews) TBClockClearMappedContents(cv);
         NSArray *icons = TBAllIcons();
         NSArray *cacheList = caches;
 
