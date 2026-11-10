@@ -35,6 +35,9 @@ static NSString *gIndexTheme;
 static NSHashTable *gCaches;   // 缓存对象弱引用；批次快照持有存活对象
 static NSCache *gImageCache;      // 已生成的图标缓存
 static NSCache *gClockFaceCache;  // 当前主题表盘成品缓存，换主题时清空
+static NSDictionary *gPrefSnapshot;
+static NSDate *gPrefSnapshotTime;
+static BOOL gPrefSnapshotLoaded;
 static NSMutableDictionary<NSString *, NSString *> *gBundleRes;   // 文件名 -> Bundles 里的路径
 static NSLock *gLock;
 
@@ -164,22 +167,26 @@ static void TBLogOnce(NSString *key, NSString *fmt, ...) {
 
 #pragma mark - 设置 / 索引
 
+static void TBInvalidatePreferenceCache(void) {
+    gPrefSnapshot = nil;
+    gPrefSnapshotTime = nil;
+    gPrefSnapshotLoaded = NO;
+}
+
 static id TBPref(NSString *key) {
-    // CFPreferences 在多进程间缓存不同步（曾导致 Spotlight/Preferences 里读到"无主题"）。
-    // 直接读 plist 文件兜底，保证每个进程都能拿到当前设置。
-    static NSDictionary *sCache = nil;
-    static NSDate *sCacheTime = nil;
+    // 文件快照只做短 TTL；TBReload 会显式失效，恢复默认不会再读到旧主题。
     NSDate *now = [NSDate date];
-    if (!sCache || !sCacheTime || [now timeIntervalSinceDate:sCacheTime] > 2.0) {
+    if (!gPrefSnapshotLoaded || !gPrefSnapshotTime || [now timeIntervalSinceDate:gPrefSnapshotTime] > 2.0) {
+        gPrefSnapshot = nil;
         for (NSString *p in @[@"/var/mobile/Library/Preferences/com.ning.themeboard.plist",
                               @"/var/jb/var/mobile/Library/Preferences/com.ning.themeboard.plist"]) {
             NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
-            if (d) { sCache = d; break; }
+            if (d) { gPrefSnapshot = d; break; }
         }
-        sCacheTime = now;
+        gPrefSnapshotTime = now;
+        gPrefSnapshotLoaded = YES;
     }
-    if (sCache[key]) return sCache[key];
-
+    if (gPrefSnapshot[key]) return gPrefSnapshot[key];
     return (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key,
                                                            (__bridge CFStringRef)kDomain);
 }
@@ -5249,6 +5256,7 @@ static void TBRunReload(NSUInteger mySeq, NSString *why);
 /// ---------------------------------------------------------------------------
 static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n,
                      const void *obj, CFDictionaryRef info) {
+    TBInvalidatePreferenceCache();
     static NSLock *sGate = nil;
     static NSUInteger sReq = 0, sWinCount = 0, sRunCount = 0, sSuppressed = 0;
     static NSTimeInterval sWinStart = 0, sLastRun = 0, sBreakerUntil = 0;
