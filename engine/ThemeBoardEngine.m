@@ -298,6 +298,7 @@ static UIImage *TBClockRoundedFace(UIImage *img);
 static UIImage *TBClockMaterialFace(UIView *v);
 static void TBClockClearMappedContents(UIView *v);
 static void TBClockInvalidateCache(void);
+static void TBRefreshClockViewsNow(void);
 static UIImage *TBKeyOutCornerColor(UIImage *img);
 
 /// 素材是否带透明像素（粗略判断：抽样看有没有 alpha 明显偏低的像素）
@@ -2698,6 +2699,33 @@ static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
 /// 之前 TBHealAllIconViews 一口气在主线程跑完所有窗口（~118 个图标视图 × 每个七八步 msgSend
 /// + 时钟特殊处理），应用主题回到桌面正好撞上这一大坨 → 掉帧卡顿。
 /// 现在：收集（一次快照）→ 每批 36 个视图 dispatch_async，批间让出主线程；不改任何单视图逻辑。
+static void TBRefreshClockViewsNow(void) {
+    @try {
+        NSMutableArray *stack = [NSMutableArray array];
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) [stack addObject:w];
+        NSInteger n = 0;
+        while (stack.count && n < 12000) {
+            UIView *v = stack.lastObject; [stack removeLastObject]; n++;
+            if ([NSStringFromClass([v class]) rangeOfString:@"Clock"].location != NSNotFound) {
+                TBClockClearMappedContents(v);
+                id icon = [v respondsToSelector:NSSelectorFromString(@"icon")] ?
+                    ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"icon")) : nil;
+                if ([v respondsToSelector:NSSelectorFromString(@"clearCachedImages")])
+                    ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"clearCachedImages"));
+                else if ([v respondsToSelector:NSSelectorFromString(@"_clearCachedImages")])
+                    ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"_clearCachedImages"));
+                if ([v respondsToSelector:NSSelectorFromString(@"updateUnanimated")])
+                    ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"updateUnanimated"));
+                SEL setIcon = NSSelectorFromString(@"setIcon:location:animated:");
+                if (icon && [v respondsToSelector:setIcon])
+                    ((void (*)(id, SEL, id, id, BOOL))objc_msgSend)(v, setIcon, icon, nil, NO);
+            }
+            [stack addObjectsFromArray:v.subviews];
+        }
+        TBLog(@"时钟强制刷新：%ld 个视图", (long)n);
+    } @catch (NSException *e) { TBLog(@"时钟强制刷新异常：%@", e.reason); }
+}
+
 static void TBHealAllIconViews(void) {
     // ★ 0.15.90：heal 只在该进程真的有桌面图标时才做。
     //   日志实锤：一次换主题时 Filza 600 视图 / Sileo 491 / RootHide 371 / Preferences 102
@@ -5423,6 +5451,7 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
 
         // 主题切换先清理时钟内部映射缓存，再撤掉转场代理。
         TBCrossfadeRestoreAll();
+        if (!TBActiveTheme().length) TBRefreshClockViewsNow();
         NSMutableArray *clockViews = [NSMutableArray array];
         for (UIView *w in [[UIApplication sharedApplication] windows]) {
             NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
