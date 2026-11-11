@@ -513,7 +513,7 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
 static BOOL TBIsDynamicBID(NSString *bid);
 static NSString *TBDynamicResourcePath(NSString *bid);
 static UIImage *TBCalendarBackgroundForInfo(TBInfo info);
-static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info);
+static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info, BOOL lightDate);
 static BOOL gCalendarProviderDepth;
 
 /// 图标中央偏下区域是否已经有内容（主题自己画好了日期/数字）
@@ -2414,11 +2414,14 @@ static UIImage *TBCalendarComposeNative(UIImage *base, UIImage *native, TBInfo i
     CGFloat h = info.size.height > 1 ? info.size.height : w;
     CGFloat scale = info.scale > 0.5 ? info.scale : (base.scale > 0.5 ? base.scale : 3.0);
     CGFloat ink = 0, op = 0;
-    if (TBImageDateAreaMetrics(base, &ink, &op)) return base;
+    BOOL hasStaticDate = TBImageDateAreaMetrics(base, &ink, &op);
+    // 近乎全黑的纯色底图不是静态日期：避免被旧的“暗像素占比”误判后跳过文字。
+    BOOL darkDateArea = op >= 80.0 && ink >= 98.0;
+    if (hasStaticDate && !darkDateArea) return base;
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
     fmt.scale = scale; fmt.opaque = NO;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(w, h) format:fmt];
-    UIImage *text = TBCalendarTextOverlay(native, info);
+    UIImage *text = TBCalendarTextOverlay(native, info, darkDateArea);
     if (!text) return base;
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [base drawInRect:CGRectMake(0, 0, w, h)];
@@ -3175,6 +3178,10 @@ static NSInteger TBReapplyIconsLight(void) {
                 if (!previous || ![v respondsToSelector:setOverride]) continue;
                 objc_setAssociatedObject(v, &kTBOverrideImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 ((void (*)(id, SEL, id))objc_msgSend)(v, setOverride, nil);
+                // 布局时图像和浅色外观一起覆盖；撤销时必须一起交还系统。
+                SEL clearAppearance = NSSelectorFromString(@"setOverrideIconImageAppearance:");
+                if ([v respondsToSelector:clearAppearance])
+                    ((void (*)(id, SEL, id))objc_msgSend)(v, clearAppearance, nil);
                 SEL purge = NSSelectorFromString(@"purgeCachedImages");
                 if (icon && [icon respondsToSelector:purge]) ((void (*)(id, SEL))objc_msgSend)(icon, purge);
                 SEL update = NSSelectorFromString(@"_updateIconImageViewAnimated:");
@@ -3683,7 +3690,7 @@ static UIImage *TBCalendarBackgroundForInfo(TBInfo info) {
 }
 
 /// 从系统完整日历图中只提取星期/日期文字，过滤白色背景，避免覆盖主题底图。
-static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info) {
+static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info, BOOL lightDate) {
     if (!native || !native.CGImage) return nil;
     CGSize size = info.size.width > 1 ? info.size : native.size;
     CGFloat scale = info.scale > 0.5 ? info.scale : (native.scale > 0.5 ? native.scale : 3.0);
@@ -3721,10 +3728,18 @@ static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info) {
             unsigned char *q = dst + (y * w + x) * 4;
             if (red) {
                 CGFloat a = MAX((255.0 - p[1]) / 196.0, (255.0 - p[2]) / 207.0);
-                q[0] = 255; q[1] = 59; q[2] = 48; q[3] = (unsigned char)MIN(255.0, MAX(0.0, a * 255.0));
+                unsigned char alpha = (unsigned char)MIN(255.0, MAX(0.0, a * 255.0));
+                // 仅在近纯黑底图转白；其他底图保留当前已验证的红色输出。
+                if (lightDate) {
+                    q[0] = q[1] = q[2] = alpha;
+                } else {
+                    q[0] = 255; q[1] = 59; q[2] = 48;
+                }
+                q[3] = alpha;
             } else {
-                int a = 255 - lum;
-                q[0] = q[1] = q[2] = 0; q[3] = (unsigned char)MIN(255, MAX(0, a));
+                unsigned char alpha = (unsigned char)MIN(255, MAX(0, 255 - lum));
+                q[0] = q[1] = q[2] = lightDate ? alpha : 0;
+                q[3] = alpha;
             }
         }
     }
@@ -5612,9 +5627,8 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
             gBadgeThemeImgCacheTheme = nil;
         });
 
-        // 主题切换先清理时钟内部映射缓存，再撤掉转场代理。
+        // 先撤掉转场代理，再清理旧时钟图层；恢复默认的重建放在覆盖清除之后。
         TBCrossfadeRestoreAll();
-        if (!TBActiveTheme().length) TBRefreshClockViewsNow();
         NSMutableArray *clockViews = [NSMutableArray array];
         for (UIView *w in [[UIApplication sharedApplication] windows]) {
             NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
@@ -5722,6 +5736,8 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
                 TBHealAllIconViews();
                 TBRefreshSpringBoard(why);
             }
+            // 默认表盘必须在旧图层与本引擎外观覆盖撤销后重建，避免刚恢复又被清空。
+            if (!TBActiveTheme().length) TBRefreshClockViewsNow();
             TBBadgeRelayoutVisible();
             [CATransaction commit];
         });
