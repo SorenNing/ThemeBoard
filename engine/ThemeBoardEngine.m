@@ -1490,6 +1490,8 @@ static UIImage *TBFitCached(UIImage *img, TBInfo info, NSString *bid) {
 }
 
 static UIImage *TBImageForBundle(NSString *bid) {
+    // 日历由 SBCalendarIconImageProvider 专用链处理，禁止通用图标缓存提前返回旧自绘图。
+    if ([bid isEqualToString:@"com.apple.mobilecal"]) return nil;
     if (!bid.length || !TBEnabled()) return nil;
     if (TBSafeMode()) return nil;   // 安全模式：只记日志，绝不改图
     // 时钟：表盘当普通图标图交给系统（IconBundles 优先，没有则用 Bundles 的表盘素材），
@@ -2169,7 +2171,7 @@ static UIImage *TBServeReadSide(id cache, id icon) {
     if (!TBEnabled() || TBSafeMode() || !TBApplyIconForDesktop()) return nil;
     @try {
         NSString *bid = TBBIDFromIcon(icon);
-        if (!bid.length) return nil;
+        if (!bid.length || [bid isEqualToString:@"com.apple.mobilecal"]) return nil;
         UIImage *base = TBImageForBundle(bid);
         if (!base) return nil;                 // 主题没覆盖 → 交给系统直通（写端已管全局效果）
         UIImage *out = TBFitCached(base, TBInfoOfCache(cache), bid);
@@ -2362,6 +2364,7 @@ static FnInfoImage o_iconImageWithInfo, o_unmaskedIconImageWithInfo;
 static id tb_iconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(self);
+        if ([bid isEqualToString:@"com.apple.mobilecal"]) return o_iconImageWithInfo ? o_iconImageWithInfo(self, _cmd, info) : nil;
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLogOnce([@"iconInfo|" stringByAppendingString:bid ?: @"?"], @"serve iconImageWithInfo %@", bid); return img; }
         UIImage *sys = o_iconImageWithInfo ? o_iconImageWithInfo(self, _cmd, info) : nil;
@@ -2375,6 +2378,7 @@ static id tb_iconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
 static id tb_unmaskedIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(self);
+        if ([bid isEqualToString:@"com.apple.mobilecal"]) return o_unmaskedIconImageWithInfo ? o_unmaskedIconImageWithInfo(self, _cmd, info) : nil;
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLogOnce([@"iconInfoU|" stringByAppendingString:bid ?: @"?"], @"serve unmaskedIconImageWithInfo %@", bid); return img; }
         UIImage *sys = o_unmaskedIconImageWithInfo ? o_unmaskedIconImageWithInfo(self, _cmd, info) : nil;
@@ -2388,6 +2392,7 @@ static id tb_unmaskedIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
 static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(self);
+        if ([bid isEqualToString:@"com.apple.mobilecal"]) return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
     }
