@@ -512,6 +512,8 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
 
 static BOOL TBIsDynamicBID(NSString *bid);
 static NSString *TBDynamicResourcePath(NSString *bid);
+static UIImage *TBCalendarBackgroundForInfo(TBInfo info);
+static BOOL gCalendarProviderDepth;
 
 /// 图标中央偏下区域是否已经有内容（主题自己画好了日期/数字）
 /// 日期区指标：*ink 返回"墨"占比，*op 返回不透明占比（用来判断主题图标是否已画日期）
@@ -2392,6 +2394,72 @@ static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
     return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
 }
 
+// ---- iOS 17.2 日历专用提供者：底图 + 系统原生星期/日期 ----
+typedef id (*CalendarProviderImageFn)(id, SEL, TBInfo);
+typedef void (*CalendarProviderReloadFn)(id, SEL);
+static CalendarProviderImageFn o_calendarProviderImage;
+static CalendarProviderImageFn o_calendarProviderUnmasked;
+static CalendarProviderReloadFn o_calendarReload;
+static BOOL gDoneCalendarProvider;
+
+static UIImage *TBCalendarComposeNative(UIImage *base, UIImage *native, TBInfo info) {
+    if (!base || !native) return base;
+    CGFloat w = info.size.width > 1 ? info.size.width : base.size.width;
+    CGFloat h = info.size.height > 1 ? info.size.height : w;
+    CGFloat scale = info.scale > 0.5 ? info.scale : (base.scale > 0.5 ? base.scale : 3.0);
+    CGFloat ink = 0, op = 0;
+    if (TBImageDateAreaMetrics(base, &ink, &op)) return base;
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = scale; fmt.opaque = NO;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(w, h) format:fmt];
+    return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [base drawInRect:CGRectMake(0, 0, w, h)];
+        [native drawInRect:CGRectMake(0, 0, w, h)];
+    }];
+}
+
+static id tb_calendarProviderImage(id self, SEL _cmd, TBInfo info) {
+    if (gCalendarProviderDepth || !TBEnabled() || TBSafeMode() || !TBActiveTheme().length)
+        return o_calendarProviderImage ? o_calendarProviderImage(self, _cmd, info) : nil;
+    gCalendarProviderDepth = YES;
+    id native = o_calendarProviderImage ? o_calendarProviderImage(self, _cmd, info) : nil;
+    gCalendarProviderDepth = NO;
+    UIImage *base = TBCalendarBackgroundForInfo(info);
+    if (base && [native isKindOfClass:[UIImage class]]) return TBCalendarComposeNative(base, native, info);
+    return native ?: base;
+}
+
+static id tb_calendarProviderUnmasked(id self, SEL _cmd, TBInfo info) {
+    if (gCalendarProviderDepth || !TBEnabled() || TBSafeMode() || !TBActiveTheme().length)
+        return o_calendarProviderUnmasked ? o_calendarProviderUnmasked(self, _cmd, info) : nil;
+    gCalendarProviderDepth = YES;
+    id native = o_calendarProviderUnmasked ? o_calendarProviderUnmasked(self, _cmd, info) : nil;
+    gCalendarProviderDepth = NO;
+    UIImage *base = TBCalendarBackgroundForInfo(info);
+    if (base && [native isKindOfClass:[UIImage class]]) return TBCalendarComposeNative(base, native, info);
+    return native ?: base;
+}
+
+static void tb_calendarProviderReload(id self, SEL _cmd) {
+    if (o_calendarReload) o_calendarReload(self, _cmd);
+}
+
+static void TBInstallCalendarProviderHooks(void) {
+    if (gDoneCalendarProvider) return;
+    Class cls = NSClassFromString(@"SBCalendarIconImageProvider");
+    if (!cls) return;
+    gDoneCalendarProvider = YES;
+    if (TBHasMethod(cls, @"iconImageWithInfo:"))
+        o_calendarProviderImage = (CalendarProviderImageFn)TBHook(cls, @"iconImageWithInfo:",
+            (IMP)tb_calendarProviderImage, "日历专用合成");
+    if (TBHasMethod(cls, @"unmaskedIconImageWithInfo:"))
+        o_calendarProviderUnmasked = (CalendarProviderImageFn)TBHook(cls, @"unmaskedIconImageWithInfo:",
+            (IMP)tb_calendarProviderUnmasked, "日历专用合成(unmasked)");
+    if (TBHasMethod(cls, @"reloadIconImage"))
+        o_calendarReload = (CalendarProviderReloadFn)TBHook(cls, @"reloadIconImage",
+            (IMP)tb_calendarProviderReload, "日历专用刷新");
+}
+
 // ---- SBIconImageView.setImage:（SnowBoard 核心通道，快捷指令桌面）----
 typedef void (*SetImgFn)(id, SEL, id);
 static SetImgFn o_setImageOnIconView;
@@ -3589,6 +3657,15 @@ static AppIconScaleFn o_appIconScale;
 
 static BOOL TBIsThemedResourceName(NSString *name);
 static NSString *TBBIDFromIcon(id icon);
+
+static UIImage *TBCalendarBackgroundForInfo(TBInfo info) {
+    if (!TBEnabled() || TBSafeMode() || !TBActiveTheme().length) return nil;
+    NSString *path = TBDynamicResourcePath(@"com.apple.mobilecal");
+    if (!path.length) return nil;
+    UIImage *img = [[UIImage alloc] initWithContentsOfFile:path];
+    if (!img) return nil;
+    return TBIconFinalImage(TBFitImage(img, info));
+}
 
 /// 设置页图标 / 通知中心 共用 UIKit 应用图标入口
 static BOOL TBUIKitIconEnabled(void) {
@@ -4814,6 +4891,9 @@ static void TBInstall(void) {
         // 表盘：hook contentsImage，始终返回当前主题的表盘（换主题后自然就是新表盘）
         TBInstallClockContentsHooks();
     }
+
+    // 日历专用提供者：系统在原生提供者里生成星期和日期。
+    TBInstallCalendarProviderHooks();
 
     // ★★★ 通知中心图标：0.15.89 起永久封存。
     //   照 SystemX 1.5-8 的 NCBadgedIconView 五连 hook（init×2/set×2/layout）实测：
