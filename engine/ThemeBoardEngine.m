@@ -186,7 +186,8 @@ static id TBPref(NSString *key) {
         gPrefSnapshotTime = now;
         gPrefSnapshotLoaded = YES;
     }
-    if (gPrefSnapshot[key]) return gPrefSnapshot[key];
+    // plist 存在时它是当前真值；键缺失就表示恢复默认，不能再回退到 cfprefsd 的旧主题。
+    if (gPrefSnapshot) return gPrefSnapshot[key];
     return (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key,
                                                            (__bridge CFStringRef)kDomain);
 }
@@ -303,7 +304,7 @@ static UIImage *TBMatchSystemGeometry(UIImage *img, UIImage *sys);
 static UIImage *TBImageForBundle(NSString *bid);      // 前置：时钟判定要用
 static UIImage *TBClockRoundedFace(UIImage *img);
 static UIImage *TBClockMaterialFace(UIView *v);
-static void TBClockClearMappedContents(UIView *v);
+static void TBClockClearMappedContents(UIView *v, BOOL clearLayer);
 static void TBClockInvalidateCache(void);
 static void TBRefreshClockViewsNow(void);
 static UIImage *TBKeyOutCornerColor(UIImage *img);
@@ -2556,7 +2557,7 @@ static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
     // 只在【这一个时钟视图】上做，对整棵视图树调用会崩。
     if ([vcls rangeOfString:@"Clock"].location != NSNotFound) {
         @try {
-            TBClockClearMappedContents(v);
+            TBClockClearMappedContents(v, NO);
             TBLogOnce([@"clockrefresh|" stringByAppendingString:vcls], @"时钟视图重画 %@", vcls);
             NSMutableString *st = [NSMutableString string];
             SEL iconSel = NSSelectorFromString(@"icon");
@@ -2714,7 +2715,7 @@ static void TBRefreshClockViewsNow(void) {
         while (stack.count && n < 12000) {
             UIView *v = stack.lastObject; [stack removeLastObject]; n++;
             if ([NSStringFromClass([v class]) rangeOfString:@"Clock"].location != NSNotFound) {
-                TBClockClearMappedContents(v);
+                TBClockClearMappedContents(v, NO);
                 id icon = [v respondsToSelector:NSSelectorFromString(@"icon")] ?
                     ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"icon")) : nil;
                 if ([v respondsToSelector:NSSelectorFromString(@"clearCachedImages")])
@@ -4617,10 +4618,15 @@ static void TBClockInvalidateCache(void) {
     [gClockFaceCache removeAllObjects];
 }
 
-static void TBClockClearMappedContents(UIView *v) {
+static void TBClockClearMappedContents(UIView *v, BOOL clearLayer) {
     if (!v) return;
     @try { [v setValue:nil forKey:@"mappedContentsImage"]; } @catch (NSException *e) { }
     @try { [v setValue:nil forKey:@"squareMappedContentsImage"]; } @catch (NSException *e) { }
+    if (clearLayer) {
+        v.layer.contents = nil;
+        v.layer.contentsGravity = kCAGravityResize;
+        [v setNeedsDisplay];
+    }
 }
 
 static UIImage *TBClockMaterialFace(UIView *v) {
@@ -5471,7 +5477,7 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
                 if (stack.count > 12000) break;
             }
         }
-        for (UIView *cv in clockViews) TBClockClearMappedContents(cv);
+        for (UIView *cv in clockViews) TBClockClearMappedContents(cv, YES);
         NSArray *icons = TBAllIcons();
         NSArray *cacheList = caches;
 
