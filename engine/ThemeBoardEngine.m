@@ -513,6 +513,7 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
 static BOOL TBIsDynamicBID(NSString *bid);
 static NSString *TBDynamicResourcePath(NSString *bid);
 static UIImage *TBCalendarBackgroundForInfo(TBInfo info);
+static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info);
 static BOOL gCalendarProviderDepth;
 
 /// 图标中央偏下区域是否已经有内容（主题自己画好了日期/数字）
@@ -2417,9 +2418,11 @@ static UIImage *TBCalendarComposeNative(UIImage *base, UIImage *native, TBInfo i
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
     fmt.scale = scale; fmt.opaque = NO;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(w, h) format:fmt];
+    UIImage *text = TBCalendarTextOverlay(native, info);
+    if (!text) return base;
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [base drawInRect:CGRectMake(0, 0, w, h)];
-        [native drawInRect:CGRectMake(0, 0, w, h)];
+        [text drawInRect:CGRectMake(0, 0, w, h)];
     }];
 }
 
@@ -3665,11 +3668,72 @@ static NSString *TBBIDFromIcon(id icon);
 
 static UIImage *TBCalendarBackgroundForInfo(TBInfo info) {
     if (!TBEnabled() || TBSafeMode() || !TBActiveTheme().length) return nil;
-    NSString *path = TBDynamicResourcePath(@"com.apple.mobilecal");
+    NSString *path = nil;
+    // 日历底图优先取 IconBundles/com.apple.mobilecal.png，
+    // 没有时再取 Bundles/CalendarIconBackground*。
+    [gLock lock];
+    TBLoadIndex();
+    path = gIndex[@"com.apple.mobilecal"];
+    [gLock unlock];
+    if (!path.length) path = TBDynamicResourcePath(@"com.apple.mobilecal");
     if (!path.length) return nil;
     UIImage *img = [[UIImage alloc] initWithContentsOfFile:path];
     if (!img) return nil;
     return TBIconFinalImage(TBFitImage(img, info));
+}
+
+/// 从系统完整日历图中只提取星期/日期文字，过滤白色背景，避免覆盖主题底图。
+static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info) {
+    if (!native || !native.CGImage) return nil;
+    CGSize size = info.size.width > 1 ? info.size : native.size;
+    CGFloat scale = info.scale > 0.5 ? info.scale : (native.scale > 0.5 ? native.scale : 3.0);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.scale = scale; fmt.opaque = YES;
+    UIGraphicsImageRenderer *rr = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
+    UIImage *scaled = [rr imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [native drawInRect:CGRectMake(0, 0, size.width, size.height)];
+    }];
+    CGImageRef cg = scaled.CGImage;
+    if (!cg) return nil;
+    size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    unsigned char *src = calloc(w * h * 4, 1);
+    CGContextRef sc = src ? CGBitmapContextCreate(src, w, h, 8, w * 4, cs,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big) : NULL;
+    CGContextRef oc = CGBitmapContextCreate(NULL, w, h, 8, w * 4, cs,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!sc || !oc) { if (sc) CGContextRelease(sc); if (oc) CGContextRelease(oc); free(src); return nil; }
+    CGContextDrawImage(sc, CGRectMake(0, 0, w, h), cg);
+    unsigned char *dst = CGBitmapContextGetData(oc); memset(dst, 0, w * h * 4);
+    for (size_t y = 0; y < h; y++) {
+        CGFloat ny = (CGFloat)y / (CGFloat)MAX(h - 1, 1);
+        if (ny < 0.06 || ny > 0.84) continue;
+        for (size_t x = 0; x < w; x++) {
+            unsigned char *p = src + (y * w + x) * 4;
+            if (p[3] < 10) continue;
+            int mx = MAX(p[0], MAX(p[1], p[2]));
+            int mn = MIN(p[0], MIN(p[1], p[2]));
+            int lum = (299 * p[0] + 587 * p[1] + 114 * p[2]) / 1000;
+            BOOL red = p[0] > 130 && p[0] > p[1] * 1.25 && p[0] > p[2] * 1.25;
+            BOOL black = mx - mn < 45 && lum < 210;
+            if (!red && !black) continue;
+            unsigned char *q = dst + (y * w + x) * 4;
+            if (red) {
+                CGFloat a = MAX((255.0 - p[1]) / 196.0, (255.0 - p[2]) / 207.0);
+                q[0] = 255; q[1] = 59; q[2] = 48; q[3] = (unsigned char)MIN(255.0, MAX(0.0, a * 255.0));
+            } else {
+                int a = 255 - lum;
+                q[0] = q[1] = q[2] = 0; q[3] = (unsigned char)MIN(255, MAX(0, a));
+            }
+        }
+    }
+    CGImageRef outCG = CGBitmapContextCreateImage(oc);
+    CGContextRelease(sc); CGContextRelease(oc); free(src);
+    if (!outCG) return nil;
+    UIImage *out = [UIImage imageWithCGImage:outCG scale:scale orientation:UIImageOrientationUp];
+    CGImageRelease(outCG);
+    return out;
 }
 
 /// 设置页图标 / 通知中心 共用 UIKit 应用图标入口
