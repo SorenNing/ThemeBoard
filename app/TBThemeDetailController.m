@@ -430,6 +430,7 @@ static CGFloat TBPreviewCardHeight(CGFloat width) {
 @property (nonatomic, assign) NSUInteger covered;
 @property (nonatomic, assign) NSUInteger installed;
 @property (nonatomic, assign) BOOL active;
+@property (nonatomic, assign) NSUInteger applyFeedbackGeneration;
 @property (nonatomic, strong) UIImage *maskPreviewImage;   // 遮罩预览（已按当前形状裁好）
 @property (nonatomic, copy) NSString *maskPreviewCaption;
 - (void)tb_dismissSearch;
@@ -575,6 +576,11 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     [self.collectionView reloadData];
 }
 
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    self.applyFeedbackGeneration++; // 离页后即使返回，也不弹之前请求的提示。
+}
+
 - (void)computeCoverage {
     NSArray<NSDictionary *> *apps = [TBAppInfo installedApps];
     self.installed = apps.count;
@@ -697,24 +703,49 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
 
 #pragma mark - 操作卡片
 
+- (void)tb_notifyApplyWithCancelledFeedback:(BOOL)cancelled {
+    NSUInteger generation = ++self.applyFeedbackGeneration;
+    [TBToast dismissNow];
+    __weak TBThemeDetailController *weakSelf = self;
+    [TBPrefs notifyChangedWithCompletion:^(BOOL confirmed) {
+        TBThemeDetailController *owner = weakSelf;
+        if (!owner || owner.applyFeedbackGeneration != generation || !owner.isViewLoaded ||
+            !owner.view.window || owner.presentedViewController || owner.isBeingDismissed ||
+            owner.isMovingFromParentViewController ||
+            (owner.navigationController && owner.navigationController.topViewController != owner) ||
+            [UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+        // 自绘底栏切页只隐藏父视图，不一定转发生命周期回调。
+        for (UIView *view = owner.view; view; view = view.superview) {
+            if (view.hidden || view.alpha < 0.01) return;
+        }
+        if (confirmed) {
+            if (cancelled) [TBToast showCancelledIn:owner];
+            else [TBToast showAppliedIn:owner];
+        } else {
+            [TBToast show:@"设置已保存，尚未收到应用完成确认" icon:@"clock" in:owner];
+        }
+    }];
+    [self refreshApplyState]; // 这里只反映偏好已保存；成功提示必须等 SpringBoard 回执。
+}
+
 - (void)applyTapped {
     [TBPrefs setString:self.theme.name forKey:TBKeyActiveTheme];
     [TBPrefs setBool:YES forKey:TBKeyEnabled];
-    [TBPrefs notifyChanged];
-    [self refreshApplyState];
-    [TBToast showAppliedIn:self];   // 玻璃胶囊提示，替换原来的系统弹窗
+    [self tb_notifyApplyWithCancelledFeedback:NO];
 }
 
 - (void)cancelApplyTapped {
     NSString *active = [TBPrefs stringForKey:TBKeyActiveTheme];
     if (![active isEqualToString:self.theme.name]) return;
+    __weak TBThemeDetailController *weakSelf = self;
     TBPresentConfirm(self, @"取消应用？", @"桌面图标会恢复系统原样，主题文件夹不会被删除",
                      @"取消", @"取消应用", YES, ^(BOOL ok) {
-        if (!ok) return;
+        TBThemeDetailController *owner = weakSelf;
+        if (!ok || !owner || !owner.isViewLoaded || !owner.view.window) return;
+        // 确认面板关闭前，当前主题可能已被别处修改。
+        if (![[TBPrefs stringForKey:TBKeyActiveTheme] isEqualToString:owner.theme.name]) return;
         [TBPrefs setString:nil forKey:TBKeyActiveTheme];
-        [TBPrefs notifyChanged];
-        [self refreshApplyState];
-        [TBToast showCancelledIn:self];
+        [owner tb_notifyApplyWithCancelledFeedback:YES];
     });
 }
 

@@ -8,6 +8,9 @@
 #import <unistd.h>
 #import <ImageIO/ImageIO.h>
 #import <notify.h>
+#import <dlfcn.h>
+#include <stdlib.h>
+#include <string.h>
 
 static NSString *const kDomain = @"com.ning.themeboard";
 static NSString *const kNotify = @"com.ning.themeboard.changed";
@@ -26,22 +29,17 @@ typedef struct {
 #pragma mark - 状态
 
 static BOOL gIsPrimary = NO;      // 只有 SpringBoard 类进程写日志文件，避免多进程互相咬行
-static NSMutableDictionary<NSString *, UIImage *> *gFitCache;   // 已按尺寸适配过的图（避免每次调用都重画）
 static NSHashTable *gSeenIconViews = nil;          // 0.18.20：登记见过的 SBIconView（弱引用）
 static UIImage *TBThemedForIconObject(id icon);    // 0.18.20：前置声明（定义在后面）
 static dispatch_queue_t gLogQueue;
-static NSMutableDictionary<NSString *, NSString *> *gIndex;
-static NSString *gIndexTheme;
 static NSHashTable *gCaches;   // 缓存对象弱引用；批次快照持有存活对象
-static NSCache *gImageCache;      // 已生成的图标缓存
-static NSCache *gClockFaceCache;  // 当前主题表盘成品缓存，换主题时清空
-static NSDictionary *gPrefSnapshot;
-static NSDate *gPrefSnapshotTime;
-static BOOL gPrefSnapshotLoaded;
-static NSMutableDictionary<NSString *, NSString *> *gBundleRes;   // 文件名 -> Bundles 里的路径
 static NSLock *gLock;
 
 static NSUInteger gServe;
+static __thread BOOL gTBSettingsNativeIcon;
+static UIImage *TBThemedIconLike(UIImage *orig, NSString *bid);
+
+#import "TBRenderState.h"
 
 #pragma mark - 日志
 
@@ -165,31 +163,15 @@ static void TBLogOnce(NSString *key, NSString *fmt, ...) {
     TBLog(@"%@", body);
 }
 
+#import "TBLiveIconDiagnostics.h"
+
 #pragma mark - 设置 / 索引
 
-static void TBInvalidatePreferenceCache(void) {
-    gPrefSnapshot = nil;
-    gPrefSnapshotTime = nil;
-    gPrefSnapshotLoaded = NO;
-}
-
 static id TBPref(NSString *key) {
-    // 文件快照只做短 TTL；TBReload 会显式失效，恢复默认不会再读到旧主题。
-    NSDate *now = [NSDate date];
-    if (!gPrefSnapshotLoaded || !gPrefSnapshotTime || [now timeIntervalSinceDate:gPrefSnapshotTime] > 2.0) {
-        gPrefSnapshot = nil;
-        for (NSString *p in @[@"/var/mobile/Library/Preferences/com.ning.themeboard.plist",
-                              @"/var/jb/var/mobile/Library/Preferences/com.ning.themeboard.plist"]) {
-            NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
-            if (d) { gPrefSnapshot = d; break; }
-        }
-        gPrefSnapshotTime = now;
-        gPrefSnapshotLoaded = YES;
-    }
-    // plist 存在时它是当前真值；键缺失就表示恢复默认，不能再回退到 cfprefsd 的旧主题。
-    if (gPrefSnapshot) return gPrefSnapshot[key];
-    return (__bridge_transfer id)CFPreferencesCopyAppValue((__bridge CFStringRef)key,
-                                                           (__bridge CFStringRef)kDomain);
+    // Rendering reads only the published generation (or an explicit candidate).
+    // Disk preferences may already describe the next theme while it is prepared.
+    TB_RENDER_SCOPE();
+    return TBCurrentRenderState()->preferences[key];
 }
 static BOOL TBSafeMode(void) {
     id v = TBPref(@"SafeMode");
@@ -250,13 +232,13 @@ static NSString *TBStripName(NSString *file) {
 
 static void TBLoadIndex(void);          // 前置声明：TBResourceImage 会用到
 
-static NSString *gBundleResTheme;
 static void TBLoadBundleResources(NSString *themeDir);
 
 /// 取当前主题的 Bundles 资源表。
 /// 关键：**没有主题时必须清空** —— 之前只在有主题时重建，切回默认后表里还留着
 /// 上一个主题的素材，于是"主题没有 ClockIconBackgroundSquare"永远判成有 → 时钟残留。
 static NSMutableDictionary *TBThemeBundleRes(void) {
+    TB_RENDER_SCOPE();
     NSString *theme = TBActiveTheme();
     NSString *dir = theme.length ? TBThemeDir(theme) : nil;
     if (!dir) {
@@ -269,6 +251,7 @@ static NSMutableDictionary *TBThemeBundleRes(void) {
 }
 
 static void TBLoadBundleResources(NSString *themeDir) {
+    TB_RENDER_SCOPE();
     // 之前只要建过一次就永不重建 —— 换主题后会一直用旧主题的资源表，
     // 导致「主题无此图」的假阴性（时钟底图就是这么丢的）。改为按主题目录缓存。
     if (gBundleRes && gBundleResTheme && [gBundleResTheme isEqualToString:themeDir]) return;
@@ -306,7 +289,7 @@ static UIImage *TBClockRoundedFace(UIImage *img);
 static UIImage *TBClockMaterialFace(UIView *v);
 static void TBClockClearMappedContents(UIView *v, BOOL clearLayer);
 static void TBClockInvalidateCache(void);
-static void TBRefreshClockViewsNow(void);
+static void TBRefreshDynamicIconViewsNow(void);
 static UIImage *TBKeyOutCornerColor(UIImage *img);
 
 /// 素材是否带透明像素（粗略判断：抽样看有没有 alpha 明显偏低的像素）
@@ -389,16 +372,13 @@ static UIImage *TBMatchSystemGeometry(UIImage *img, UIImage *sys) {
 }
 
 /// 玻璃素材缓存（主体高度透明 = 玻璃层）
-static NSMutableSet *gGlassNames;
 /// 主题里是否有同名资源（表盘/指针/文件夹底等）
 static UIImage *TBResourceImage(NSString *name) {
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon) return nil;
     if (!name.length || TBSafeMode() || !TBEnabled()) return nil;
 
     // 同一主题同一素材只解码一次（原来每次取图都重新读盘 + 解码 PNG）
-    static NSMutableDictionary *gResCache = nil;
-    static NSString *gResTheme = nil;
-    static dispatch_once_t onceRes;
-    dispatch_once(&onceRes, ^{ gResCache = [NSMutableDictionary dictionary]; });
     NSString *themeKey = TBActiveTheme() ?: @"";
     if (![themeKey isEqualToString:gResTheme ?: @""]) {
         [gResCache removeAllObjects];
@@ -442,6 +422,7 @@ static UIImage *TBResourceImage(NSString *name) {
 }
 
 static void TBLoadIndex(void) {
+    TB_RENDER_SCOPE();
     NSString *theme = TBActiveTheme();
     if (!theme) { gIndex = nil; gIndexTheme = nil; return; }
     if (gIndex && [gIndexTheme isEqualToString:theme]) return;
@@ -513,8 +494,11 @@ static UIImage *TBDynamicIcon(UIImage *base, NSString *bid) {
 static BOOL TBIsDynamicBID(NSString *bid);
 static NSString *TBDynamicResourcePath(NSString *bid);
 static UIImage *TBCalendarBackgroundForInfo(TBInfo info);
-static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info, BOOL lightDate);
-static BOOL gCalendarProviderDepth;
+static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info);
+// Only suppress nested native-generation calls on this thread. The provider is
+// also called by background cache workers; they must not bypass theme composition
+// merely because the main thread is currently retrieving its native date image.
+static __thread BOOL gCalendarProviderDepth;
 
 /// 图标中央偏下区域是否已经有内容（主题自己画好了日期/数字）
 /// 日期区指标：*ink 返回"墨"占比，*op 返回不透明占比（用来判断主题图标是否已画日期）
@@ -613,7 +597,6 @@ static UIImage *TBCalendarCompositeImage(UIImage *bg) {
 /// 取主题图：锁内只做字典查找，读盘/绘制都在锁外，避免 SpringBoard 被拖死
 /// 图标圆角遮罩：系统图标是超椭圆遮罩（不是普通圆角矩形）。主题里方角素材
 /// （WPS / 设置 / 相机 / 备忘录这些）不打遮罩就是方块，这里统一按超椭圆裁。
-static UIImage *gSystemMaskTemplate;                 // 系统遮罩形状（学到后全用它）
 static UIImage *TBMaskWithSystemShape(UIImage *art);
 static UIImage *TBMaskWithThemeMask(UIImage *art, UIImage *mask);      // 用主题自带遮罩图裁
 static UIImage *TBApplyIconShape(UIImage *img, BOOL skipIfRounded);    // 三种模式的统一入口
@@ -804,16 +787,12 @@ static BOOL TBMaskStatsLookGlass(TBMaskStats st) {
 ///      → IconBundles/IconMask.png → Bundles/com.apple.springboard/IconMask.png
 /// 结果按主题名缓存：同一主题只扫一次盘，换主题或设置变更自动失效
 /// （TBReload 里会清这个缓存，这样 App 导入遮罩后不用重启就生效）。
-static UIImage *gMaskThemeImg;
-static NSString *gMaskThemeKey;      // 缓存对应的主题名
-static BOOL gMaskThemeChecked;
-static UIImage *gMaskGlassImg;       // 淡玻璃遮罩（不当形状用，改当叠加层用）
-static NSString *gMaskGlassKey;
 
 /// 判定一张遮罩图到底是「形状」还是「淡玻璃层」：
 ///   淡玻璃/渐变玻璃 → 返回 nil（不当形状用），同时把它记到 gMaskGlassImg 给叠加层用；
 ///   真实形状（硬边 / 柔边都算）→ 原样返回。
 static UIImage *TBGlassMaskOrShape(UIImage *img, NSString *key, NSString *label) {
+    TB_RENDER_SCOPE();
     gMaskGlassImg = nil;
     gMaskGlassKey = nil;
     if (!img) return nil;
@@ -835,6 +814,7 @@ static UIImage *TBGlassMaskOrShape(UIImage *img, NSString *key, NSString *label)
 
 /// 淡玻璃遮罩改当玻璃叠加层：画在图标之上，alpha 乘 GlassOverlayStrength
 static UIImage *TBThemeGlassFromFaintMask(void) {
+    TB_RENDER_SCOPE();
     if (TBSafeMode() || !TBEnabled()) return nil;
     if (!TBUseThemeIconMask()) return nil;   // 只有在「遮罩」模式 / 素材包遮罩开关打开时才用
     if (!gMaskGlassImg || !gMaskGlassKey || !gMaskThemeKey) return nil;
@@ -843,6 +823,7 @@ static UIImage *TBThemeGlassFromFaintMask(void) {
 }
 
 static UIImage *TBThemeMaskImage(void) {
+    TB_RENDER_SCOPE();
     if (TBSafeMode() || !TBEnabled()) return nil;
     // 素材包（独立素材）优先：CustomMaskPath
     id cmp = TBPref(@"CustomMaskPath");
@@ -1015,8 +996,8 @@ static UIImage *TBRoundedCornerImage(UIImage *img, CGFloat radius) {
 
 /// 把「四角本来就透明的圆角素材」补成方角：用同行/同列最近的边缘像素颜色填四角。
 /// 不补的话，素材自己的圆角永远盖过设置 —— 自定义圆角调小（更方）会完全看不出效果。
-static NSMapTable *gSquareFillCache;
 static UIImage *TBArtSquareFilled(UIImage *img) {
+    TB_RENDER_SCOPE();
     if (!img || !img.CGImage) return img;
     // ★ 0.15.71 性能：补方角只是"用边缘颜色填四角"，不需要原分辨率。
     //   大图先降到 ~120px 再做逐像素填充（原来 180~540px 全分辨率跑两趟，
@@ -1118,6 +1099,7 @@ static UIImage *TBArtSquareFilled(UIImage *img) {
 ///   ④ gSystemMaskTemplate：按系统遮罩形状裁（现状）
 ///   ⑤ 兜底 MIN(宽,高) × 0.2237（现状）
 static UIImage *TBApplyIconShape(UIImage *img, BOOL skipIfRounded) {
+    TB_RENDER_SCOPE();
     if (!img) return img;
     if (TBUseThemeIconMask()) {                       // ① 主题自带遮罩图
         UIImage *m = TBThemeMaskImage();
@@ -1150,10 +1132,8 @@ static UIImage *TBIconRoundedImage(UIImage *img) {
 //   AnemoneEffects/iPhoneShadow@3x.png  → @2x            垫在图标之下
 // 只看这两个名字；icon_shortcut_mask 之类的专用遮罩不算，AnemoneEffects 也不当形状遮罩用。
 // 结果按「主题名 + 名字」缓存，设置变更（TBReload）时清掉。
-static UIImage *gFxImg[2];
-static NSString *gFxKey[2];
-static BOOL gFxChecked[2];
 static UIImage *TBThemeFxImage(int slot, NSString *base) {
+    TB_RENDER_SCOPE();
     if (TBSafeMode() || !TBEnabled()) return nil;
     // 素材包（独立素材）优先：CustomOverlayPath / CustomShadowPath
     id cp = TBPref(slot == 0 ? @"CustomOverlayPath" : @"CustomShadowPath");
@@ -1318,6 +1298,7 @@ static CGRect TBShadowArtRect(UIImage *shadow, CGRect canvas, CGRect iconRect) {
 /// 0.15.49：**图标不缩小**（iconRect = 整块画布）；阴影只在图标边缘/底部露一圈，
 /// 真正的投影交给视图层的 TBApplyIconLayerShadow。
 static UIImage *TBApplyIconEffects(UIImage *img) {
+    TB_RENDER_SCOPE();
     if (!img) return img;
     CGSize pt = img.size;
     if (pt.width < 1 || pt.height < 1) return img;
@@ -1365,6 +1346,7 @@ static UIImage *TBApplyIconEffects(UIImage *img) {
 
 /// 图标最终出图：① 按形状裁（主题遮罩 / 自定义圆角 / 系统形状）② 再叠特效（阴影在下、叠加层在上）
 static UIImage *TBIconFinalImage(UIImage *img) {
+    TB_RENDER_SCOPE();
     return TBApplyIconEffects(TBIconRoundedImage(img));
 }
 
@@ -1372,18 +1354,16 @@ static UIImage *TBIconFinalImage(UIImage *img) {
 
 /// 特效相关偏好的 1 秒 TTL 缓存：layoutSubviews 里别每次都去问 cfprefsd / 读素材
 static void TBShadowLayerParams(BOOL *enabledOut, double *strengthOut) {
-    static BOOL sOn = NO;
-    static double sStrength = 0;
-    static NSTimeInterval sAt = 0;
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (sAt <= 0 || now - sAt > 1.0) {
-        sAt = now;
-        sStrength = TBGlassOverlayStrength();
-        sOn = TBUseThemeIconShadow() && (TBThemeShadowImage() != nil) &&
-              !TBSafeMode() && TBEnabled();
+    TB_RENDER_SCOPE();
+    TBThemeRenderState *state = TBCurrentRenderState();
+    if (!state->shadowParamsChecked) {
+        state->shadowParamsChecked = YES;
+        state->shadowStrength = TBGlassOverlayStrength();
+        state->shadowOn = TBUseThemeIconShadow() && (TBThemeShadowImage() != nil) &&
+                          !TBSafeMode() && TBEnabled();
     }
-    if (enabledOut) *enabledOut = sOn;
-    if (strengthOut) *strengthOut = sStrength;
+    if (enabledOut) *enabledOut = state->shadowOn;
+    if (strengthOut) *strengthOut = state->shadowStrength;
 }
 
 static char kTBLayerShadowKey;   // 记录已应用的阴影参数（layout 会被反复调用）
@@ -1393,6 +1373,7 @@ static char kTBLayerShadowKey;   // 记录已应用的阴影参数（layout 会�
 ///   · shadowPath 用圆角矩形 → UIKit 不用为了算阴影去栅格化整棵子树（滚动卡顿的主因）
 ///   · 强度仍然受 GlassOverlayStrength 控制（0 = 不画，同时把之前设过的清掉）
 static void TBApplyIconLayerShadow(id iconView, UIView *imgView) {
+    TB_RENDER_SCOPE();
     if (!iconView || ![iconView isKindOfClass:[UIView class]]) return;
     @try {
         UIView *v = (UIView *)iconView;
@@ -1475,6 +1456,7 @@ static void TBLearnSystemMask(UIImage *sysMasked) {
 
 /// 带缓存的"按尺寸适配"：同一 bid + 同一尺寸只渲染一次（原来每次调用都重画一张）
 static UIImage *TBFitCached(UIImage *img, TBInfo info, NSString *bid) {
+    TB_RENDER_SCOPE();
     if (!img) return nil;
     if (!bid.length) return TBFitImage(img, info);
     // 键里带主题名：换主题瞬间，同 bid 同尺寸的旧键不能命中旧主题的成品图
@@ -1491,6 +1473,8 @@ static UIImage *TBFitCached(UIImage *img, TBInfo info, NSString *bid) {
 }
 
 static UIImage *TBImageForBundle(NSString *bid) {
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon) return nil;
     // 日历由 SBCalendarIconImageProvider 专用链处理，禁止通用图标缓存提前返回旧自绘图。
     if ([bid isEqualToString:@"com.apple.mobilecal"]) return nil;
     if (!bid.length || !TBEnabled()) return nil;
@@ -1623,243 +1607,184 @@ static NSString *TBBIDFromIcon(id icon) {
     //   除非未来做真机运行时 dump 并找到安全插入点，否则不再尝试。
 
 static void TBRefreshVisibleTablesLight(NSString *why);
-static void TBRefreshSettingsIconsBatch(NSString *why);
-static void TBApplyIconToCellByTitle(UITableViewCell *cell);
 
-// ---- 设置列表 App 行图标（0.16.0）----
-// 视频里的 View Hierarchy 实锤：设置列表每行是 `PSTableCell`，图标是它内置的
-//   `cell.imageView`（29×29），并且 `_imageLoader = nil`（同步设图、无异步覆盖）。
-// 而 `setupIconImageWithBundle:` 只对插件设置入口触发，App 行完全不经过那条通道 ——
-// 这就是"储存空间页有色、设置主页那列没色"的全部原因。
-static void (*o_psRetRefresh)(id, SEL, id);
-static void (*o_psRetSetSpec)(id, SEL, id);
+// ---- Settings App row icons: synchronous PSTableCell source ----
+static __thread BOOL gTBPSGetterDepth;
+static __thread BOOL gTBPSSetterDepth;
+static const void *kTBPSBidKey=&kTBPSBidKey;
+static const void *kTBPSOriginalKey=&kTBPSOriginalKey;
+static const void *kTBPSAppliedKey=&kTBPSAppliedKey;
+static const void *kTBPSStateKey=&kTBPSStateKey;
+static IMP o_tbPSGetIcon, o_tbPSGetLazyIcon, o_tbPSGetIconFromServices;
+static IMP o_tbPSSetIcon, o_tbPSPrepareForReuse;
 
-/// 从 PSSpecifier 取 bundleID（App 行的 identifier 就是包名）
 static NSString *TBBidFromAnySpecifier(id spec) {
     if (!spec) return nil;
     @try {
-        for (NSString *k in @[ @"identifier", @"bundleIdentifier" ]) {
-            if ([spec respondsToSelector:NSSelectorFromString(k)]) {
-                id v = ((id (*)(id, SEL))objc_msgSend)(spec, NSSelectorFromString(k));
-                if ([v isKindOfClass:[NSString class]] && [(NSString *)v containsString:@"."]) return v;
+        for (NSString *key in @[@"identifier", @"bundleIdentifier"]) {
+            SEL selector=NSSelectorFromString(key);
+            if (![spec respondsToSelector:selector]) continue;
+            id value=((id(*)(id,SEL))objc_msgSend)(spec,selector);
+            if ([value isKindOfClass:[NSString class]] && [(NSString *)value containsString:@"."]) return value;
+        }
+        SEL property=NSSelectorFromString(@"propertyForKey:");
+        if ([spec respondsToSelector:property]) {
+            for (NSString *key in @[@"bundleID",@"applicationBundleIdentifier",@"id"]) {
+                id value=((id(*)(id,SEL,id))objc_msgSend)(spec,property,key);
+                if ([value isKindOfClass:[NSString class]] && [(NSString *)value containsString:@"."]) return value;
             }
         }
-        if ([spec respondsToSelector:NSSelectorFromString(@"propertyForKey:")]) {
-            for (NSString *k in @[ @"bundleID", @"applicationBundleIdentifier", @"id" ]) {
-                id v = ((id (*)(id, SEL, id))objc_msgSend)(spec, NSSelectorFromString(@"propertyForKey:"), k);
-                if ([v isKindOfClass:[NSString class]] && [(NSString *)v containsString:@"."]) return v;
-            }
-        }
-    } @catch (NSException *e) {}
+    } @catch (NSException *exception) {}
     return nil;
 }
 
-/// 把某一行的图标换成主题图（只动 cell.imageView，不碰文字/角标）
-static void TBApplySettingsRowIcon(id cell, id spec) {
-    if (![cell isKindOfClass:[UITableViewCell class]]) return;
-    NSString *bid = TBBidFromAnySpecifier(spec);
-    if (!bid.length) return;
-    if (!TBEnabled() || TBSafeMode() || !TBUIKitIconEnabled()) return;
-    UIImage *img = TBImageForBundle(bid);
-    if (![img isKindOfClass:[UIImage class]]) return;
-    UIImageView *iv = ((UITableViewCell *)cell).imageView;
-    if (![iv isKindOfClass:[UIImageView class]]) return;
-    CGSize sz = iv.bounds.size;
-    if (sz.width < 8) sz = CGSizeMake(29, 29);
-    CGFloat sc = [UIScreen mainScreen].scale;
-    TBInfo info = { sz, sc, 0 };
-    UIImage *sized = TBFitCached(img, info, bid) ?: img;
-    if (iv.image == sized) return;
-    iv.image = sized;
-    iv.contentMode = UIViewContentModeScaleAspectFit;
-    TBLogOnce([@"setrow|" stringByAppendingString:bid], @"设置页图标(PSTableCell)：%@ 已替换（%.0fx%.0f）",
-              bid, sz.width, sz.height);
+static void TBPSClearCellState(id cell) {
+    objc_setAssociatedObject(cell,kTBPSBidKey,nil,OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(cell,kTBPSOriginalKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell,kTBPSAppliedKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell,kTBPSStateKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
-
-static void tb_psRefresh(id self, SEL _cmd, id spec) {
-    if (o_psRetRefresh) o_psRetRefresh(self, _cmd, spec);
+static NSString *TBPSCellBundleID(id cell) {
+    id spec=nil;
     @try {
-        TBApplySettingsRowIcon(self, spec);
-        // 保险：UIKit 有时在 layout 之后才把系统图写回 → 下一拍再补一次
-        __weak id wcell = self; id wspec = spec;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            id c = wcell; if (c) TBApplySettingsRowIcon(c, wspec);
-        });
-    } @catch (NSException *e) {}
-}
-
-static void tb_psSetSpec(id self, SEL _cmd, id spec) {
-    if (o_psRetSetSpec) o_psRetSetSpec(self, _cmd, spec);
-    @try { TBApplySettingsRowIcon(self, spec); } @catch (NSException *e) {}
-}
-
-// ---- 设置列表 App 行图标（0.16.1）----
-// 视频实锤：17.x 设置列表由 PSUIPrefsListController + UITableViewModel 驱动，
-//   旧接口 refreshCellContentsWithSpecifier: 不触发；行的图标是 cell 里那个 29×29 的
-//   UIImageView，而且 _imageLoader = nil（同步直接 setImage）。
-// 方案：在【设置进程】里 hook UIImageView -setImage:，用「行标题 = App 显示名」映射回
-//   bundleID（LSApplicationWorkspace 建一次表并缓存），命中主题就替换成主题图。
-static NSDictionary *gNameToBID;
-
-static void TBBuildNameMap(void) {
-    // ★ 0.16.3：直接【按主题索引里的 bundleID】建「显示名→bundleID」表 —— 只查主题覆盖的 App，
-    //   既覆盖了系统 App（邮件/日历…allApplications 里常常没有），又快（百来条）。
-    static BOOL building = NO;
-    if (gNameToBID || building) return;
-    building = YES;
-    NSArray *bids = nil;
-    [gLock lock];
-    TBLoadIndex();
-    bids = gIndex ? [gIndex allKeys] : nil;
-    [gLock unlock];
-    NSArray *snapshot = [bids copy];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSMutableDictionary *m = [NSMutableDictionary dictionary];
-        Class proxyCls = NSClassFromString(@"LSApplicationProxy");
-        SEL selProxy = NSSelectorFromString(@"applicationProxyForIdentifier:");
-        for (NSString *bid in snapshot) {
-            @try {
-                NSString *nm = nil;
-                if (proxyCls && [proxyCls respondsToSelector:selProxy]) {
-                    id proxy = ((id (*)(id, SEL, id))objc_msgSend)(proxyCls, selProxy, bid);
-                    if (proxy) {
-                        for (NSString *s2 in @[ @"localizedName", @"itemName" ]) {
-                            if (![proxy respondsToSelector:NSSelectorFromString(s2)]) continue;
-                            id v = ((id (*)(id, SEL))objc_msgSend)(proxy, NSSelectorFromString(s2));
-                            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) { nm = v; break; }
-                        }
-                    }
-                }
-                if (nm.length) m[nm] = bid;
-            } @catch (NSException *e) {}
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            gNameToBID = [m copy];
-            building = NO;
-            TBLog(@"设置页图标：按主题索引建映射表 %lu 条", (unsigned long)m.count);
-        });
-    });
-}
-
-static NSMutableDictionary *gTitleImg;      // 行标题 → 已缩放的图（NSNull 表示无主题）
-static const void *kTBDoneKey = &kTBDoneKey; // cell 上打标记，一行只处理一次
-
-/// 取 cell 的标题文字（先 textLabel，再浅层搜第一个 UILabel，最多 15 个节点）
-static NSString *TBCellTitleText(id cell) {
+        SEL selector=NSSelectorFromString(@"specifier");
+        if ([cell respondsToSelector:selector]) spec=((id(*)(id,SEL))objc_msgSend)(cell,selector);
+        if (!spec) spec=[cell valueForKey:@"_specifier"];
+    } @catch (NSException *exception) {}
+    NSString *bid=TBBidFromAnySpecifier(spec);
+    if (bid.length) return bid;
     @try {
-        if ([cell respondsToSelector:@selector(textLabel)]) {
-            UILabel *l = ((UILabel * (*)(id, SEL))objc_msgSend)(cell, @selector(textLabel));
-            if ([l isKindOfClass:[UILabel class]] && l.text.length) return l.text;
+        SEL selector=NSSelectorFromString(@"getLazyIconID");
+        if ([cell respondsToSelector:selector]) {
+            id value=((id(*)(id,SEL))objc_msgSend)(cell,selector);
+            if ([value isKindOfClass:[NSString class]] && [(NSString *)value containsString:@"."]) return value;
         }
-    } @catch (NSException *e) {}
-    NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
-    NSInteger n = 0;
-    while (stack.count && n < 15) {
-        UIView *v = stack.firstObject; [stack removeObjectAtIndex:0]; n++;
-        if ([v isKindOfClass:[UILabel class]] && ((UILabel *)v).text.length) return ((UILabel *)v).text;
-        [stack addObjectsFromArray:[v.subviews copy]];
+    } @catch (NSException *exception) {}
+    return nil;
+}
+
+static UIImage *TBPSThemedImage(id cell,UIImage *candidate) {
+    TB_RENDER_SCOPE();
+    if (![candidate isKindOfClass:[UIImage class]]) return candidate;
+    NSString *bid=TBPSCellBundleID(cell);
+    if (!bid.length) { TBPSClearCellState(cell); return candidate; }
+    NSString *oldBid=objc_getAssociatedObject(cell,kTBPSBidKey);
+    UIImage *original=objc_getAssociatedObject(cell,kTBPSOriginalKey);
+    UIImage *applied=objc_getAssociatedObject(cell,kTBPSAppliedKey);
+    if (![oldBid isEqualToString:bid]) {
+        // A recycled cell must not use the previous App's source image.
+        BOOL stale=(candidate==applied);
+        TBPSClearCellState(cell);
+        objc_setAssociatedObject(cell,kTBPSBidKey,bid,OBJC_ASSOCIATION_COPY_NONATOMIC);
+        original=nil; applied=nil;
+        if (stale) return nil;
     }
-    return nil;
-}
-
-/// 批量替换：只扫描"屏幕上可见的表格行"，按行标题换成主题图标。
-/// 不进 setImage: 热路径，所以滚动时零开销。
-static void TBApplyIconToCellByTitle(UITableViewCell *cell) {
-    @try {
-        if (!cell) return;
-        NSString *title = TBCellTitleText(cell);
-        if (!title.length) return;
-        if (!gNameToBID) { TBBuildNameMap(); return; }
-        if (!gTitleImg) gTitleImg = [NSMutableDictionary dictionary];
-        id cached = gTitleImg[title];
-        UIImage *sized = nil;
-        if ([cached isKindOfClass:[UIImage class]]) sized = cached;
-        else if (cached) return;
-        else {
-            NSString *bid = gNameToBID[title];
-            UIImage *theme = bid.length ? TBImageForBundle(bid) : nil;
-            if (![theme isKindOfClass:[UIImage class]]) { gTitleImg[title] = [NSNull null]; return; }
-            CGSize sz = CGSizeMake(29, 29);
-            UIImageView *rowImageView = cell.imageView;
-            if ([rowImageView isKindOfClass:[UIImageView class]] && rowImageView.bounds.size.width > 8) sz = rowImageView.bounds.size;
-            TBInfo info = { sz, [UIScreen mainScreen].scale, 0 };
-            sized = TBFitCached(theme, info, bid) ?: theme;
-            gTitleImg[title] = sized ?: (id)[NSNull null];
-            TBLogOnce([@"ivrow|" stringByAppendingString:bid], @"设置页图标(批量)：%@（行「%@」）已替换", bid, title);
-        }
-        if (![sized isKindOfClass:[UIImage class]]) return;
-        // 0.16.8：不只改 cell.imageView —— 视频显示行的图标是 cell 里那个近方形 UIImageView，
-        //   它未必就是 cell.imageView。这里把 cell 内【所有】近方形小 UIImageView 都换上。
-        NSMutableArray *stack2 = [NSMutableArray arrayWithObject:(id)cell];
-        NSInteger m = 0, hit = 0;
-        while (stack2.count && m < 40) {
-            UIView *v = stack2.firstObject; [stack2 removeObjectAtIndex:0]; m++;
-            if ([v isKindOfClass:[UIImageView class]]) {
-                CGSize isz = v.bounds.size;
-                if (isz.width >= 8 && isz.width <= 64 && fabs(isz.width - isz.height) <= 4) {
-                    UIImageView *iv2 = (UIImageView *)v;
-                    if (iv2.image != sized) {
-                        iv2.image = sized;
-                        iv2.contentMode = UIViewContentModeScaleAspectFit;
-                    }
-                    hit++;
-                }
-            }
-            [stack2 addObjectsFromArray:[v.subviews copy]];
-        }
-        (void)hit;
-    } @catch (NSException *e) {}
-}
-
-static void (*o_prepareReuse)(id, SEL);
-static void tb_prepareReuse(id self, SEL _cmd) {
-    if (o_prepareReuse) o_prepareReuse(self, _cmd);
-    // 0.16.8：cell 复用会把图换回系统图 → 复用后立刻按标题再贴一次（很轻：字典查表）
-    @try {
-        if ([[NSProcessInfo processInfo].processName isEqualToString:@"Preferences"]) {
-            if ([self isKindOfClass:[UITableViewCell class]]) {
-                dispatch_async(dispatch_get_main_queue(), ^{ TBApplyIconToCellByTitle((UITableViewCell *)self); });
-            }
-        }
-    } @catch (NSException *e) {}
-}
-
-static void TBRefreshSettingsIconsBatch(NSString *why) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    if (candidate==applied && original) candidate=original;
+    else if (candidate!=original) {
+        original=candidate;
+        applied=nil;
+        objc_setAssociatedObject(cell,kTBPSOriginalKey,original,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(cell,kTBPSAppliedKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(cell,kTBPSStateKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!TBEnabled() || TBSafeMode() || !TBUIKitIconEnabled()) return candidate;
+    NSNumber *generation=objc_getAssociatedObject(cell,kTBPSStateKey);
+    NSUInteger currentGeneration=TBCurrentRenderState()->generation;
+    if (applied && generation && generation.unsignedLongLongValue==currentGeneration) return applied;
+    CGSize size=candidate.size;
+    if (size.width<8 || size.height<8) {
         @try {
-            NSMutableArray<UIView *> *stack = [NSMutableArray array];
-            // 0.16.9：只从 keyWindow 起扫、节点上限降到 120（原来扫所有窗口 400 节点，每 1.2s 跑一次有开销）
-            UIWindow *kw = nil;
-            @try { kw = [[UIApplication sharedApplication] keyWindow]; } @catch (NSException *e) {}
-            if (kw) [stack addObject:kw];
-            else for (UIView *w in [[UIApplication sharedApplication] windows]) [stack addObject:w];
-            NSInteger n = 0, rows = 0;
-            // 0.16.10：滚动中不扫（用户实测设置滑动时不时卡 —— 就是这个定时扫描正好落在滚动里）
-            BOOL scrolling = NO;
-            for (UIView *w in [UIApplication sharedApplication].windows) {
-                if ([w isKindOfClass:[UIScrollView class]] &&
-                    (((UIScrollView *)w).isDragging || ((UIScrollView *)w).isDecelerating)) { scrolling = YES; break; }
-                for (UIView *sub in w.subviews) {
-                    if ([sub isKindOfClass:[UIScrollView class]] &&
-                        (((UIScrollView *)sub).isDragging || ((UIScrollView *)sub).isDecelerating)) { scrolling = YES; break; }
-                }
-                if (scrolling) break;
-            }
-            if (scrolling) return;
-            while (stack.count && n < 80) {
-                UIView *v = stack.firstObject; [stack removeObjectAtIndex:0]; n++;
-                if ([v isKindOfClass:[UITableView class]]) {
-                    UITableView *tv = (UITableView *)v;
-                    for (NSIndexPath *ip in [tv indexPathsForVisibleRows]) {
-                        UITableViewCell *c = [tv cellForRowAtIndexPath:ip];
-                        if (c) { TBApplyIconToCellByTitle(c); rows++; }
-                    }
-                }
-                [stack addObjectsFromArray:[v.subviews copy]];
-            }
-            if (rows) TBLog(@"设置页图标(批量 %@)：扫描 %ld 行", why ?: @"?", (long)rows);
-        } @catch (NSException *e) { }
-    });
+            SEL selector=NSSelectorFromString(@"iconImageView");
+            id view=[cell respondsToSelector:selector] ? ((id(*)(id,SEL))objc_msgSend)(cell,selector) : nil;
+            if ([view isKindOfClass:[UIImageView class]]) size=((UIImageView *)view).bounds.size;
+        } @catch (NSException *exception) {}
+    }
+    if (size.width<8 || size.height<8) return candidate;
+    // TBImageForBundle already applies shape/effects: do not process it twice.
+    UIImage *image=TBImageForBundle(bid);
+    if (!image) image=TBGlobalEffectImage(candidate,bid);
+    if (![image isKindOfClass:[UIImage class]] || image==candidate) return candidate;
+    TBInfo info={size,candidate.scale>0.5 ? candidate.scale : [UIScreen mainScreen].scale,0};
+    image=TBFitCached(image,info,[@"settings|" stringByAppendingString:bid]);
+    if (!image) return candidate;
+    objc_setAssociatedObject(cell,kTBPSAppliedKey,image,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell,kTBPSStateKey,@(currentGeneration),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return image;
+}
+
+static id TBPSReadIcon(id cell,SEL selector,IMP original) {
+    if (!original) return nil;
+    id (*callOriginal)(id,SEL)=(id(*)(id,SEL))original;
+    if (gTBPSGetterDepth) return callOriginal(cell,selector);
+    BOOL previous=gTBPSGetterDepth, nativePrevious=gTBSettingsNativeIcon;
+    gTBPSGetterDepth=YES;
+    id native=nil;
+    @try {
+        // Fetch the native image before the caller stores it in PSTableCell.
+        gTBSettingsNativeIcon=YES;
+        native=callOriginal(cell,selector);
+    } @finally {
+        gTBSettingsNativeIcon=nativePrevious;
+        gTBPSGetterDepth=previous;
+    }
+    return TBPSThemedImage(cell,native);
+}
+static id tb_psGetIcon(id self,SEL selector) { return TBPSReadIcon(self,selector,o_tbPSGetIcon); }
+static id tb_psGetLazyIcon(id self,SEL selector) { return TBPSReadIcon(self,selector,o_tbPSGetLazyIcon); }
+static id tb_psGetIconFromServices(id self,SEL selector) { return TBPSReadIcon(self,selector,o_tbPSGetIconFromServices); }
+
+static void tb_psSetIcon(id self,SEL selector,id image) {
+    if (!o_tbPSSetIcon) return;
+    void (*callOriginal)(id,SEL,id)=(void(*)(id,SEL,id))o_tbPSSetIcon;
+    if (gTBPSGetterDepth || gTBPSSetterDepth) { callOriginal(self,selector,image); return; }
+    BOOL previous=gTBPSSetterDepth;
+    gTBPSSetterDepth=YES;
+    @try { callOriginal(self,selector,TBPSThemedImage(self,image)); }
+    @finally { gTBPSSetterDepth=previous; }
+}
+static void tb_psPrepareForReuse(id self,SEL selector) {
+    BOOL previous=gTBPSGetterDepth, nativePrevious=gTBSettingsNativeIcon;
+    gTBPSGetterDepth=YES; gTBSettingsNativeIcon=YES;
+    @try { if (o_tbPSPrepareForReuse) ((void(*)(id,SEL))o_tbPSPrepareForReuse)(self,selector); }
+    @finally {
+        TBPSClearCellState(self);
+        gTBPSGetterDepth=previous; gTBSettingsNativeIcon=nativePrevious;
+    }
+}
+
+static const char *TBPSUnqualifiedType(const char *type) {
+    if (!type) return "";
+    while (*type && strchr("rnNoORV",*type)) type++;
+    return type;
+}
+static BOOL TBPSMethodMatches(Method method,const char *types) {
+    if (!method || !types || method_getNumberOfArguments(method)!=strlen(types)-1) return NO;
+    char *type=method_copyReturnType(method);
+    BOOL matches=(*TBPSUnqualifiedType(type)==types[0]); free(type);
+    for (unsigned int i=0;matches && i<strlen(types)-1;i++) {
+        type=method_copyArgumentType(method,i);
+        char actual=*TBPSUnqualifiedType(type), expected=types[i+1];
+        matches=((actual=='c'||actual=='B')&&(expected=='c'||expected=='B')) || actual==expected;
+        free(type);
+    }
+    return matches;
+}
+static BOOL TBPSInstallMethod(Class cls,SEL selector,IMP replacement,IMP *original,const char *types) {
+    if (!cls || !original || !replacement) return NO;
+    if (*original) return YES;
+    Method method=class_getInstanceMethod(cls,selector);
+    if (!TBPSMethodMatches(method,types)) return NO;
+    IMP previous=method_getImplementation(method);
+    if (!previous || previous==replacement) return NO;
+    *original=previous;
+    if (class_addMethod(cls,selector,replacement,method_getTypeEncoding(method))) return YES;
+    unsigned int count=0; Method *methods=class_copyMethodList(cls,&count); Method local=NULL;
+    for (unsigned int i=0;i<count;i++)
+        if (sel_isEqual(method_getName(methods[i]),selector)) { local=methods[i]; break; }
+    free(methods);
+    if (!local || method_getImplementation(local)!=previous) { *original=NULL; return NO; }
+    method_setImplementation(local,replacement);
+    return YES;
 }
 
 // ---- 时钟供图（0.18.1 的四 hook 版）已整体移除：见 0.18.7 说明 ----
@@ -1909,6 +1834,7 @@ static id tb_ncRequestContent(id self, SEL _cmd) {
 }
 
 static id tb_ncIcons(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
     id r = o_ncIcons ? o_ncIcons(self, _cmd) : nil;        // 原实现只调一次
     if (![r isKindOfClass:[NSArray class]] || ((NSArray *)r).count == 0) return r;
     @try {
@@ -2017,6 +1943,7 @@ static NSString *TBNCBidFromRequestLike(id req) {
 }
 
 static void tb_ncsLayout(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
     if (o_ncsLayout) o_ncsLayout(self, _cmd);
     if (TBSafeMode() || !TBEnabled()) return;
     if (![self isKindOfClass:[UIView class]]) return;
@@ -2051,6 +1978,7 @@ static void tb_ncsLayout(id self, SEL _cmd) {
 }
 
 static void tb_ncbLayout(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
     if (o_ncbLayout) o_ncbLayout(self, _cmd);
     if (TBSafeMode() || !TBEnabled()) return;
     if (![self isKindOfClass:[UIView class]]) return;
@@ -2120,6 +2048,17 @@ static IMP TBHook(Class cls, NSString *selName, IMP repl, const char *tag) {
     Method m = class_getInstanceMethod(cls, NSSelectorFromString(selName));
     if (!m) { TBLog(@"· %s: 方法不存在(%@)", tag, selName); return NULL; }
     IMP orig = method_getImplementation(m);
+    if (TBDiagEnabled() &&
+        ([NSStringFromClass(cls) containsString:@"Calendar"] ||
+         [NSStringFromClass(cls) containsString:@"Clock"] ||
+         [NSStringFromClass(cls) isEqualToString:@"SBIcon"])) {
+        Class owner = TBDiagOwner(cls, NSSelectorFromString(selName));
+        Dl_info originalImage = {0};
+        dladdr((const void *)orig, &originalImage);
+        TBLog(@"LIVE hook.before class=%@ selector=%@ owner=%@ encoding=%s original=%p image=%s",
+              NSStringFromClass(cls), selName, owner ? NSStringFromClass(owner) : @"-",
+              method_getTypeEncoding(m), orig, originalImage.dli_fname ?: "-");
+    }
     method_setImplementation(m, repl);
     TBLog(@"✓ hook %@ -%@", NSStringFromClass(cls), selName);
     return orig;
@@ -2169,6 +2108,7 @@ static FnISGenerateImage o_isGenerateImage;
 ///   · 而是走和【写缓存端】同一套加工：TBFitCached(主题图, 缓存请求的尺寸) ——
 ///     成品按「主题+bid+尺寸」缓存，保证尺寸正确、不重复计算、不返回 1024 大图
 static UIImage *TBServeReadSide(id cache, id icon) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode() || !TBApplyIconForDesktop()) return nil;
     @try {
         NSString *bid = TBBIDFromIcon(icon);
@@ -2183,6 +2123,7 @@ static UIImage *TBServeReadSide(id cache, id icon) {
 }
 
 static id tb_imageForIcon(id self, SEL _cmd, id icon) {
+    TB_RENDER_SCOPE();
     // ★ 0.18.19：先给主题图（读端接管，尺寸/成品都走同一套加工）；没素材再直通。
     //   直通时顺手从系统那张已遮罩图里学一次"系统遮罩形状"，供我们裁剪素材时使用。
     TBRemember(self);
@@ -2195,30 +2136,35 @@ static id tb_imageForIcon(id self, SEL _cmd, id icon) {
 }
 
 static id tb_imageForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     { UIImage *m = TBServeReadSide(self, icon); if (m) return m; }
     return o_imageForIconOpt ? o_imageForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
 static id tb_cachedForIcon(id self, SEL _cmd, id icon) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     { UIImage *m = TBServeReadSide(self, icon); if (m) return m; }
     return o_cachedForIcon ? o_cachedForIcon(self, _cmd, icon) : nil;
 }
 
 static id tb_realForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     { UIImage *m = TBServeReadSide(self, icon); if (m) return m; }
     return o_realForIconOpt ? o_realForIconOpt(self, _cmd, icon, opt) : nil;
 }
 
 static id tb_unmaskedForIcon(id self, SEL _cmd, id icon) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     { UIImage *m = TBServeReadSide(self, icon); if (m) return m; }   // ★ 0.18.19：Dock 也接管
     return o_unmaskedForIcon ? o_unmaskedForIcon(self, _cmd, icon) : nil;
 }
 
 static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     { UIImage *m = TBServeReadSide(self, icon); if (m) return m; }   // ★ 0.18.19：Dock 也接管
     return o_unmaskedForIconOpt ? o_unmaskedForIconOpt(self, _cmd, icon, opt) : nil;
@@ -2226,20 +2172,24 @@ static id tb_unmaskedForIconOpt(id self, SEL _cmd, id icon, unsigned long long o
 
 /// 缓存落盘的那一刻换掉图 —— 这样所有后续消费者（含变体缓存）拿到的都是主题图
 static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
+    TB_RENDER_SCOPE();
     // 缓存写入端接管（这是唯一在本机实测有效的手段：系统写入缓存时把非主题图换成主题图）。
     // 系统在这台 iOS 17.2 上不会因为 purge/clear/update 就丢掉旧合成图，必须在这里拦截。
     TBRemember(self);
     @try {
         NSString *bid = TBBIDFromIcon(icon);
+        if (TBDiagDynamicBID(bid)) TBDiagEmit(@"cache.in", icon, _cmd, image, nil, NSStringFromClass([self class]));
         if (bid.length && TBApplyIconForDesktop() && !TBSafeMode()) {
             UIImage *mine = TBFitCached(TBImageForBundle(bid), TBInfoOfCache(self), bid) ?: TBImageForBundle(bid);
             if (mine) {
+                if (TBDiagDynamicBID(bid)) TBDiagEmit(@"cache.theme", icon, _cmd, image, mine, @"system cache write");
                 TBLogOnce([@"cachewrite|" stringByAppendingString:bid], @"cachewrite %@", bid);
                 return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, mine, icon) : nil;
             }
             // 主题没覆盖 → 全局效果：把系统图加工后再落缓存
             UIImage *g = TBGlobalEffectImage(image, bid);
             if (g && g != image) {
+                if (TBDiagDynamicBID(bid)) TBDiagEmit(@"cache.effects", icon, _cmd, image, g, @"system cache write");
                 TBLogOnce([@"cachewriteG|" stringByAppendingString:bid], @"cachewrite(全局) %@", bid);
                 return o_cacheImageForIcon ? o_cacheImageForIcon(self, _cmd, g, icon) : nil;
             }
@@ -2251,6 +2201,7 @@ static id tb_cacheImageForIcon(id self, SEL _cmd, id image, id icon) {
 /// 0.18.4：iOS 17 过渡动画（点进 App / 退出回桌面）走的是带 imageAppearance 的新签名缓存，
 /// 老签名 imageForIcon:options: 接不到 → 动画期露出原图。这里同样在**缓存写入端**接管。
 static id tb_imageForIconApp(id self, SEL _cmd, id icon, id appearance, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     // ★ 1.46：进/退 App 的形变走这条「带 imageAppearance」的读端。以前只接管写端，
     //   缓存里没有这张外观变体（深色外观 = 系统黑底图）时就直通 → 悬浮 Dock 常驻区闪原图。
@@ -2261,17 +2212,21 @@ static id tb_imageForIconApp(id self, SEL _cmd, id icon, id appearance, unsigned
 }
 
 static id tb_cacheImageForIconApp(id self, SEL _cmd, id image, id icon, id appearance, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     TBRemember(self);
     @try {
         NSString *bid = TBBIDFromIcon(icon);
+        if (TBDiagDynamicBID(bid)) TBDiagEmit(@"cache.in", icon, _cmd, image, nil, NSStringFromClass([self class]));
         if (bid.length && TBApplyIconForDesktop() && !TBSafeMode()) {
             UIImage *mine = TBFitCached(TBImageForBundle(bid), TBInfoOfCache(self), bid) ?: TBImageForBundle(bid);
             if (mine) {
+                if (TBDiagDynamicBID(bid)) TBDiagEmit(@"cache.theme", icon, _cmd, image, mine, @"system cache write");
                 TBLogOnce([@"cachewriteA|" stringByAppendingString:bid], @"cachewrite(appearance) %@", bid);
                 return o_cacheImageForIconApp ? o_cacheImageForIconApp(self, _cmd, mine, icon, appearance, opt) : nil;
             }
             UIImage *g = TBGlobalEffectImage(image, bid);
             if (g && g != image) {
+                if (TBDiagDynamicBID(bid)) TBDiagEmit(@"cache.effects", icon, _cmd, image, g, @"system cache write");
                 TBLogOnce([@"cachewriteAG|" stringByAppendingString:bid], @"cachewrite(appearance,全局) %@", bid);
                 return o_cacheImageForIconApp ? o_cacheImageForIconApp(self, _cmd, g, icon, appearance, opt) : nil;
             }
@@ -2286,10 +2241,9 @@ static BOOL TBGlobalEffectOn(void) {
     id v = TBPref(@"GlobalIconEffect");
     return v ? [v boolValue] : YES;
 }
-static NSMutableDictionary *gGlobalImgCache;
-static NSString *gGlobalCacheTheme;
 static UIImage *TBGlobalEffectImage(UIImage *src, NSString *bid) {
-    if (!src || !bid.length) return src;
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon || !src || !bid.length) return src;
     if (!TBGlobalEffectOn() || TBSafeMode() || !TBEnabled()) return src;
     // 时钟/日历是动态合成图标，不套
     if ([bid isEqualToString:@"com.apple.mobiletimer"] ||
@@ -2363,9 +2317,14 @@ static FnInfoImage o_iconImageWithInfo, o_unmaskedIconImageWithInfo;
 
 /// SnowBoard 的通道：在 SBIcon 这层交出【原始素材】，遮罩/合成/缓存/刷新全交给系统
 static id tb_iconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
+    TB_RENDER_SCOPE();
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(self);
-        if ([bid isEqualToString:@"com.apple.mobilecal"]) return o_iconImageWithInfo ? o_iconImageWithInfo(self, _cmd, info) : nil;
+        if ([bid isEqualToString:@"com.apple.mobilecal"]) {
+            id native = o_iconImageWithInfo ? o_iconImageWithInfo(self, _cmd, info) : nil;
+            TBDiagEmit(@"calendar.classic", self, _cmd, native, nil, @"passthrough");
+            return native;
+        }
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLogOnce([@"iconInfo|" stringByAppendingString:bid ?: @"?"], @"serve iconImageWithInfo %@", bid); return img; }
         UIImage *sys = o_iconImageWithInfo ? o_iconImageWithInfo(self, _cmd, info) : nil;
@@ -2377,9 +2336,14 @@ static id tb_iconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
 }
 
 static id tb_unmaskedIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
+    TB_RENDER_SCOPE();
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(self);
-        if ([bid isEqualToString:@"com.apple.mobilecal"]) return o_unmaskedIconImageWithInfo ? o_unmaskedIconImageWithInfo(self, _cmd, info) : nil;
+        if ([bid isEqualToString:@"com.apple.mobilecal"]) {
+            id native = o_unmaskedIconImageWithInfo ? o_unmaskedIconImageWithInfo(self, _cmd, info) : nil;
+            TBDiagEmit(@"calendar.classic", self, _cmd, native, nil, @"passthrough");
+            return native;
+        }
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLogOnce([@"iconInfoU|" stringByAppendingString:bid ?: @"?"], @"serve unmaskedIconImageWithInfo %@", bid); return img; }
         UIImage *sys = o_unmaskedIconImageWithInfo ? o_unmaskedIconImageWithInfo(self, _cmd, info) : nil;
@@ -2391,9 +2355,14 @@ static id tb_unmaskedIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
 }
 
 static id tb_generateIconImageWithInfo(id self, SEL _cmd, TBImageInfo info) {
+    TB_RENDER_SCOPE();
     if (TBApplyIconForDesktop()) {
         NSString *bid = TBBIDFromIcon(self);
-        if ([bid isEqualToString:@"com.apple.mobilecal"]) return o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
+        if ([bid isEqualToString:@"com.apple.mobilecal"]) {
+            id native = o_generateIconImageWithInfo ? o_generateIconImageWithInfo(self, _cmd, info) : nil;
+            TBDiagEmit(@"calendar.classic", self, _cmd, native, nil, @"passthrough");
+            return native;
+        }
         UIImage *img = TBImageForBundle(bid);
         if (img) { gServe++; TBLog(@"serve generateIconImageWithInfo %@", bid); return img; }
     }
@@ -2409,19 +2378,21 @@ static CalendarProviderReloadFn o_calendarReload;
 static BOOL gDoneCalendarProvider;
 
 static UIImage *TBCalendarComposeNative(UIImage *base, UIImage *native, TBInfo info) {
+    TB_RENDER_SCOPE();
     if (!base || !native) return base;
     CGFloat w = info.size.width > 1 ? info.size.width : base.size.width;
     CGFloat h = info.size.height > 1 ? info.size.height : w;
     CGFloat scale = info.scale > 0.5 ? info.scale : (base.scale > 0.5 ? base.scale : 3.0);
     CGFloat ink = 0, op = 0;
-    BOOL hasStaticDate = TBImageDateAreaMetrics(base, &ink, &op);
-    // 近乎全黑的纯色底图不是静态日期：避免被旧的“暗像素占比”误判后跳过文字。
-    BOOL darkDateArea = op >= 80.0 && ink >= 98.0;
-    if (hasStaticDate && !darkDateArea) return base;
+    if (TBImageDateAreaMetrics(base, &ink, &op)) {
+        TBDiagEmit(@"calendar.static", nil, NULL, native, base, @"existing static-date decision");
+        return base;
+    }
     UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
     fmt.scale = scale; fmt.opaque = NO;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(w, h) format:fmt];
-    UIImage *text = TBCalendarTextOverlay(native, info, darkDateArea);
+    UIImage *text = TBCalendarTextOverlay(native, info);
+    TBDiagEmit(@"calendar.text", nil, NULL, native, text, @"native text overlay");
     if (!text) return base;
     return [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
         [base drawInRect:CGRectMake(0, 0, w, h)];
@@ -2430,24 +2401,52 @@ static UIImage *TBCalendarComposeNative(UIImage *base, UIImage *native, TBInfo i
 }
 
 static id tb_calendarProviderImage(id self, SEL _cmd, TBInfo info) {
+    TB_RENDER_SCOPE();
+    if (TBDiagEnabled()) TBDiagEmit(@"calendar.enter", self, _cmd, nil, nil,
+        [NSString stringWithFormat:@"provider size=%.1fx%.1f scale=%.1f depth=%d",
+          info.size.width, info.size.height, info.scale, (int)gCalendarProviderDepth]);
     if (gCalendarProviderDepth || !TBEnabled() || TBSafeMode() || !TBActiveTheme().length)
         return o_calendarProviderImage ? o_calendarProviderImage(self, _cmd, info) : nil;
+    BOOL previousDepth = gCalendarProviderDepth;
+    id native = nil;
     gCalendarProviderDepth = YES;
-    id native = o_calendarProviderImage ? o_calendarProviderImage(self, _cmd, info) : nil;
-    gCalendarProviderDepth = NO;
+    @try {
+        native = o_calendarProviderImage ? o_calendarProviderImage(self, _cmd, info) : nil;
+    } @finally {
+        gCalendarProviderDepth = previousDepth;
+    }
     UIImage *base = TBCalendarBackgroundForInfo(info);
-    if (base && [native isKindOfClass:[UIImage class]]) return TBCalendarComposeNative(base, native, info);
+    TBDiagEmit(@"calendar.native-base", self, _cmd, native, base, @"after original");
+    if (base && [native isKindOfClass:[UIImage class]]) {
+        UIImage *result = TBCalendarComposeNative(base, native, info);
+        TBDiagEmit(@"calendar.result", self, _cmd, result, base, @"composed");
+        return result;
+    }
     return native ?: base;
 }
 
 static id tb_calendarProviderUnmasked(id self, SEL _cmd, TBInfo info) {
+    TB_RENDER_SCOPE();
+    if (TBDiagEnabled()) TBDiagEmit(@"calendar.enter", self, _cmd, nil, nil,
+        [NSString stringWithFormat:@"provider size=%.1fx%.1f scale=%.1f depth=%d",
+          info.size.width, info.size.height, info.scale, (int)gCalendarProviderDepth]);
     if (gCalendarProviderDepth || !TBEnabled() || TBSafeMode() || !TBActiveTheme().length)
         return o_calendarProviderUnmasked ? o_calendarProviderUnmasked(self, _cmd, info) : nil;
+    BOOL previousDepth = gCalendarProviderDepth;
+    id native = nil;
     gCalendarProviderDepth = YES;
-    id native = o_calendarProviderUnmasked ? o_calendarProviderUnmasked(self, _cmd, info) : nil;
-    gCalendarProviderDepth = NO;
+    @try {
+        native = o_calendarProviderUnmasked ? o_calendarProviderUnmasked(self, _cmd, info) : nil;
+    } @finally {
+        gCalendarProviderDepth = previousDepth;
+    }
     UIImage *base = TBCalendarBackgroundForInfo(info);
-    if (base && [native isKindOfClass:[UIImage class]]) return TBCalendarComposeNative(base, native, info);
+    TBDiagEmit(@"calendar.native-base", self, _cmd, native, base, @"after original");
+    if (base && [native isKindOfClass:[UIImage class]]) {
+        UIImage *result = TBCalendarComposeNative(base, native, info);
+        TBDiagEmit(@"calendar.result", self, _cmd, result, base, @"composed");
+        return result;
+    }
     return native ?: base;
 }
 
@@ -2476,6 +2475,7 @@ typedef void (*SetImgFn)(id, SEL, id);
 static SetImgFn o_setImageOnIconView;
 
 static void tb_setImageOnIconView(id self, SEL _cmd, id image) {
+    TB_RENDER_SCOPE();
     if (TBEnabled() && !TBSafeMode()) {
         @try {
             // 阴影（视图层）：图标图像视图自己也挂一份，覆盖"走 setImage: 贴图"的图标
@@ -2504,6 +2504,7 @@ typedef void (*ResetImgFn)(id, SEL, id);
 static ResetImgFn o_resetImageOnIconView;
 
 static void tb_resetImageOnIconView(id self, SEL _cmd, id icon) {
+    TB_RENDER_SCOPE();
     // 先让系统完成重置（保持层树完整、不递归）
     if (o_resetImageOnIconView) o_resetImageOnIconView(self, _cmd, icon);
     // 再用主题图覆盖，保证拖拽/状态重建后仍是主题
@@ -2530,6 +2531,7 @@ static char kTBOverrideImageKey;
 static char kTBCrossfadeProxyKey;
 static char kTBCrossfadeOwnerKey;
 static int gHealDepth = 0;
+static NSUInteger gReloadRunSeq = 0;
 
 /// 在子视图里找第一个能 setImage: 的 UIImageView（用于 App 资源库的 pod 视图）
 static UIView *TBFindImageViewIn(UIView *root, NSInteger depth) {
@@ -2577,6 +2579,7 @@ static id TBImageViewForIconView(id view) {
 }
 
 static BOOL TBApplyThemeToIconView(id self) {
+    TB_RENDER_SCOPE();
     if (!self) return NO;
     @try {
         id iv = TBImageViewForIconView(self);
@@ -2626,6 +2629,7 @@ static void TBPurgeIcons(id cache, NSArray *icons);
 
 /// 定点刷新可见视图（时钟、文件夹与普通图标分开处理）。
 static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
+    TB_RENDER_SCOPE();
     if (!v) return 0;
     NSInteger fixed = 0;
     NSString *vcls = NSStringFromClass([v class]);
@@ -2778,39 +2782,82 @@ static NSInteger TBHealOneView(UIView *v, NSMutableArray *iconsOut) {
             } @catch (NSException *e) { }
         }
     }
-    for (UIView *sub in v.subviews) fixed += TBHealOneView(sub, iconsOut);
+    // The batch collector already flattened this subtree; recursion here would
+    // refresh the same descendants once for every ancestor in the queue.
+    (void)iconsOut;
     return fixed;
 }
 
-/// 0.15.53：换主题后整棵窗口树【分批异步】遍历重贴。
-/// 之前 TBHealAllIconViews 一口气在主线程跑完所有窗口（~118 个图标视图 × 每个七八步 msgSend
-/// + 时钟特殊处理），应用主题回到桌面正好撞上这一大坨 → 掉帧卡顿。
-/// 现在：收集（一次快照）→ 每批 36 个视图 dispatch_async，批间让出主线程；不改任何单视图逻辑。
-static void TBRefreshClockViewsNow(void) {
-    @try {
-        NSMutableArray *stack = [NSMutableArray array];
-        for (UIWindow *w in [[UIApplication sharedApplication] windows]) [stack addObject:w];
-        NSInteger n = 0;
-        while (stack.count && n < 12000) {
-            UIView *v = stack.lastObject; [stack removeLastObject]; n++;
-            if ([NSStringFromClass([v class]) rangeOfString:@"Clock"].location != NSNotFound) {
-                TBClockClearMappedContents(v, NO);
-                id icon = [v respondsToSelector:NSSelectorFromString(@"icon")] ?
-                    ((id (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"icon")) : nil;
-                if ([v respondsToSelector:NSSelectorFromString(@"clearCachedImages")])
-                    ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"clearCachedImages"));
-                else if ([v respondsToSelector:NSSelectorFromString(@"_clearCachedImages")])
-                    ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"_clearCachedImages"));
-                if ([v respondsToSelector:NSSelectorFromString(@"updateUnanimated")])
-                    ((void (*)(id, SEL))objc_msgSend)(v, NSSelectorFromString(@"updateUnanimated"));
-                SEL setIcon = NSSelectorFromString(@"setIcon:location:animated:");
-                if (icon && [v respondsToSelector:setIcon])
-                    ((void (*)(id, SEL, id, id, BOOL))objc_msgSend)(v, setIcon, icon, nil, NO);
-            }
-            [stack addObjectsFromArray:v.subviews];
+/// Refresh only the live calendar/clock carriers. These cannot use a static
+/// override image: after publishing a generation their providers and observers
+/// must be asked for a new image even when ordinary overrides succeeded.
+static void TBRefreshDynamicIconViewsNow(void) {
+    TB_RENDER_SCOPE();
+    NSMutableArray<UIView *> *clockViews = [NSMutableArray array];
+    NSMutableArray<UIView *> *calendarViews = [NSMutableArray array];
+    NSMutableOrderedSet *icons = [NSMutableOrderedSet orderedSet];
+    NSMutableArray<UIView *> *stack = [NSMutableArray array];
+    for (UIWindow *window in [[UIApplication sharedApplication] windows])
+        [stack addObject:window];
+    NSUInteger scanned = 0;
+    while (stack.count && scanned++ < 12000) {
+        UIView *view = stack.lastObject; [stack removeLastObject];
+        [stack addObjectsFromArray:[view.subviews copy]];
+        @try {
+            id icon = [view respondsToSelector:NSSelectorFromString(@"icon")] ?
+                ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"icon")) : nil;
+            NSString *bid = TBBIDFromIcon(icon);
+            BOOL calendar = [bid isEqualToString:@"com.apple.mobilecal"];
+            BOOL clock = [bid isEqualToString:@"com.apple.mobiletimer"];
+            BOOL clockCarrier = [NSStringFromClass([view class]) rangeOfString:@"Clock"].location != NSNotFound;
+            if (calendar) [calendarViews addObject:view];
+            if (clockCarrier) [clockViews addObject:view];
+            if ((calendar || clock || clockCarrier) && icon) [icons addObject:icon];
+        } @catch (NSException *e) { }
+    }
+    // Purging the shared cache alone does not tell live image providers to reload.
+    for (id icon in icons) {
+        @try {
+            SEL purge = NSSelectorFromString(@"purgeCachedImages");
+            SEL reload = NSSelectorFromString(@"reloadIconImage");
+            if ([icon respondsToSelector:purge]) ((void (*)(id, SEL))objc_msgSend)(icon, purge);
+            if ([icon respondsToSelector:reload]) ((void (*)(id, SEL))objc_msgSend)(icon, reload);
+        } @catch (NSException *e) { }
+    }
+    // These are the observer notifications retained by the stable refresh path.
+    // Limit them to the two live icons so ordinary icons keep the new transaction.
+    for (id cache in gCaches.allObjects) {
+        for (id icon in icons) {
+            @try {
+                SEL update = NSSelectorFromString(@"notifyObserversOfUpdateForIcon:");
+                SEL unmasked = NSSelectorFromString(@"notifyObserversOfUnmaskedUpdateForIcon:");
+                if ([cache respondsToSelector:update])
+                    ((void (*)(id, SEL, id))objc_msgSend)(cache, update, icon);
+                if ([cache respondsToSelector:unmasked])
+                    ((void (*)(id, SEL, id))objc_msgSend)(cache, unmasked, icon);
+            } @catch (NSException *e) { }
         }
-        TBLog(@"时钟强制刷新：%ld 个视图", (long)n);
-    } @catch (NSException *e) { TBLog(@"时钟强制刷新异常：%@", e.reason); }
+    }
+    for (UIView *view in calendarViews) {
+        // TBImageForBundle intentionally returns nil for mobilecal; refresh its
+        // native provider/image view instead of waiting for an override image.
+        TBHealOneView(view, nil);
+        @try {
+            SEL update = NSSelectorFromString(@"_updateIconImageViewAnimated:");
+            if ([view respondsToSelector:update])
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(view, update, NO);
+        } @catch (NSException *e) { }
+    }
+    for (UIView *view in clockViews) {
+        // Target actual live image carriers, not only the enclosing SBIconView.
+        // Clear the old mapped face after overrides are removed, then run the
+        // stable component refresh sequence, including updateClockImages.
+        TBClockClearMappedContents(view, YES);
+        TBHealOneView(view, nil);
+    }
+    TBLog(@"动态图标刷新：日历视图 %lu / 时钟载体 %lu / 图标 %lu（遍历 %lu）",
+          (unsigned long)calendarViews.count, (unsigned long)clockViews.count,
+          (unsigned long)icons.count, (unsigned long)scanned);
 }
 
 static void TBHealAllIconViews(void) {
@@ -2826,6 +2873,7 @@ static void TBHealAllIconViews(void) {
     if (!sHealHost) return;
     if (gHealDepth > 0) return;
     gHealDepth++;
+    NSUInteger healSeq = gReloadRunSeq;
     TBLog(@"heal: 开始收集窗口树（分批异步重贴）");
     @try {
         // ① 一次性快照：把所有窗口里要处理的视图按序收平（此刻仍是一次遍历，但只做收集，
@@ -2850,6 +2898,7 @@ static void TBHealAllIconViews(void) {
         __block NSInteger batch = 0;
         __block void (^drain)(void) = nil;   // 链式强引用在结尾 drain=nil 时断开（队列有限必会走完）
         drain = ^{
+            if (healSeq != gReloadRunSeq) { gHealDepth--; drain = nil; return; }
             if (cursor >= (NSInteger)queue.count) {
                 TBLog(@"heal: 分批重贴完成 fixed=%ld seen=%lu（%ld 批）",
                       (long)fixed, (unsigned long)seen.count, (long)batch);
@@ -2882,6 +2931,7 @@ static void TBHealAllIconViews(void) {
 static __weak UIView *gLastClockView;   // 最近一次看到的时钟视图
 
 static void tb_iconViewLayoutSubviews(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
     if (o_iconViewLayout) o_iconViewLayout(self, _cmd);
     if (!TBApplyIconForDesktop() || TBSafeMode() || !TBEnabled()) return;
 
@@ -2927,6 +2977,7 @@ static FnImgTCO o_imgTCO = NULL;
 static FnImgTO  o_imgTO = NULL;
 
 static id TBThemedForIconObject(id icon) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode() || !TBApplyIconForDesktop()) return nil;
     @try {
         NSString *bid = TBBIDFromIcon(icon);
@@ -2936,14 +2987,22 @@ static id TBThemedForIconObject(id icon) {
 }
 
 static id tb_imgTCO(id self, SEL _cmd, TBImageInfo info, id tc, id ctx, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     UIImage *m = TBThemedForIconObject(self);
     if (m) { TBLogOnce(@"modern|tco", @"现代取图 tco 已接管"); return m; }
-    return o_imgTCO ? o_imgTCO(self, _cmd, info, tc, ctx, opt) : nil;
+    id native = o_imgTCO ? o_imgTCO(self, _cmd, info, tc, ctx, opt) : nil;
+    if (TBDiagEnabled() && TBDiagDynamicBID(TBBIDFromIcon(self)))
+        TBDiagEmit(@"icon.modern-original", self, _cmd, native, nil, @"passthrough");
+    return native;
 }
 static id tb_imgTO(id self, SEL _cmd, TBImageInfo info, id tc, unsigned long long opt) {
+    TB_RENDER_SCOPE();
     UIImage *m = TBThemedForIconObject(self);
     if (m) { TBLogOnce(@"modern|to", @"现代取图 to 已接管"); return m; }
-    return o_imgTO ? o_imgTO(self, _cmd, info, tc, opt) : nil;
+    id native = o_imgTO ? o_imgTO(self, _cmd, info, tc, opt) : nil;
+    if (TBDiagEnabled() && TBDiagDynamicBID(TBBIDFromIcon(self)))
+        TBDiagEmit(@"icon.modern-original", self, _cmd, native, nil, @"passthrough");
+    return native;
 }
 
 // ★ 1.46：退出/进入 App 的形变（图标缩放 / SBIconImageCrossfadeView）取的是 SBIcon 的
@@ -2954,6 +3013,7 @@ typedef id (*SquareContentsFn)(id, SEL);
 static SquareContentsFn o_squareContentsIcon = NULL;
 
 static id tb_squareContentsIcon(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
     if (TBEnabled() && !TBSafeMode() && TBApplyIconForDesktop()) {
         @try {
             NSString *bid = TBBIDFromIcon(self);
@@ -3165,6 +3225,7 @@ static void TBInstallCrossfadeHooks(void) {
 /// 批量刷新时对登记过的图标视图设置或清理本引擎的 override，
 /// 未覆盖的旧图标清除覆盖后让系统重取，避免布局热路径同步刷新自身。
 static NSInteger TBReapplyIconsLight(void) {
+    TB_RENDER_SCOPE();
     NSArray *views = gSeenIconViews ? gSeenIconViews.allObjects : @[];
     NSInteger n = 0;
     for (UIView *v in views) {
@@ -3213,6 +3274,7 @@ typedef void (*SetIconFn)(id, SEL, id, BOOL);
 static SetIconFn o_setIconAnimated;
 
 static void tb_setIconAnimated(id self, SEL _cmd, id icon, BOOL animated) {
+    TB_RENDER_SCOPE();
     if (o_setIconAnimated) o_setIconAnimated(self, _cmd, icon, animated);
     if (!TBApplyIconForDesktop() || TBSafeMode() || !TBEnabled()) return;
     @try {
@@ -3220,8 +3282,13 @@ static void tb_setIconAnimated(id self, SEL _cmd, id icon, BOOL animated) {
         UIImage *theme = TBImageForBundle(bid);
         if (!theme) return;
         TBLogOnce([@"reapply|" stringByAppendingString:bid ?: @"?"], @"reapply %@", bid);
+        TBThemeRenderState *sourceState = TBCurrentRenderState();
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (sourceState != TBCommittedState()) return;
+            TB_RENDER_WITH(sourceState);
             @try {
+                if ([self respondsToSelector:NSSelectorFromString(@"icon")] &&
+                    ((id (*)(id, SEL))objc_msgSend)(self, NSSelectorFromString(@"icon")) != icon) return;
                 id iv = [self valueForKey:@"_iconImageView"];
                 if (!iv || ![iv respondsToSelector:NSSelectorFromString(@"setImage:")]) return;
                 SEL boundsSel = NSSelectorFromString(@"bounds");
@@ -3254,7 +3321,8 @@ typedef void (*TBIFSetLargestFn)(id, SEL, BOOL);
 /// 主题里该 bundleID 的原图（用 ImageIO 读，不依赖 UIKit：iconservicesagent
 /// 里 UIKit 可能没有加载，走 UIImage 会静默拿到 nil）
 static CGImageRef TBCGImageForBundle(NSString *bid) {
-    if (!bid.length || !TBEnabled() || TBSafeMode()) return NULL;
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon || !bid.length || !TBEnabled() || TBSafeMode()) return NULL;
     [gLock lock];
     TBLoadIndex();
     NSString *path = gIndex[bid];
@@ -3448,6 +3516,7 @@ static IFImgFn o_ifImgDescriptor;
 static IFSizeFn o_ifImgSize;
 
 static id tb_ifImgDescriptor(id self, SEL _cmd, id descriptor) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode()) {
         return o_ifImgDescriptor ? o_ifImgDescriptor(self, _cmd, descriptor) : nil;
     }
@@ -3462,6 +3531,7 @@ static id tb_ifImgDescriptor(id self, SEL _cmd, id descriptor) {
 }
 
 static id tb_ifImgSize(id self, SEL _cmd, CGSize size, double scale) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode()) {
         return o_ifImgSize ? o_ifImgSize(self, _cmd, size, scale) : nil;
     }
@@ -3534,6 +3604,7 @@ static UIImage *TBImageFromISIcon(id icon, id descriptor) {
 }
 
 static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode()) {
         return o_isiconCG ? o_isiconCG(self, _cmd, descriptor) : NULL;
     }
@@ -3552,6 +3623,7 @@ static CGImageRef tb_isicon_cg(id self, SEL _cmd, id descriptor) {
 }
 
 static CGImageRef tb_isicon_cg2(id self, SEL _cmd, id descriptor) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode()) {
         return o_isiconCG2 ? o_isiconCG2(self, _cmd, descriptor) : NULL;
     }
@@ -3578,6 +3650,7 @@ static BOOL TBIsDynamicBID(NSString *bid) {
 /// 动态图标（时钟/日历）在主题 Bundles/ 里找对应素材：
 /// ClockIcon* / CalendarIcon*，优先 @3x > @2x > 1x
 static NSString *TBDynamicResourcePath(NSString *bid) {
+    TB_RENDER_SCOPE();
     if (!bid.length || !TBIsDynamicBID(bid)) return nil;
     NSString *prefix = [bid isEqualToString:@"com.apple.mobiletimer"] ? @"clockicon" : @"calendaricon";
     [gLock lock];
@@ -3608,6 +3681,7 @@ static NSString *TBDynamicResourcePath(NSString *bid) {
 }
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
+    TB_RENDER_SCOPE();
     id ret = o_isiconImg ? o_isiconImg(self, _cmd, descriptor) : nil;
     if (!TBEnabled() || TBSafeMode()) return ret;
 
@@ -3634,6 +3708,7 @@ static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
 }
 
 static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
+    TB_RENDER_SCOPE();
     id ret = o_isiconImg2 ? o_isiconImg2(self, _cmd, descriptor) : nil;
     if (!TBEnabled() || TBSafeMode()) return ret;
 
@@ -3674,6 +3749,7 @@ static BOOL TBIsThemedResourceName(NSString *name);
 static NSString *TBBIDFromIcon(id icon);
 
 static UIImage *TBCalendarBackgroundForInfo(TBInfo info) {
+    TB_RENDER_SCOPE();
     if (!TBEnabled() || TBSafeMode() || !TBActiveTheme().length) return nil;
     NSString *path = nil;
     // 日历底图优先取 IconBundles/com.apple.mobilecal.png，
@@ -3683,6 +3759,7 @@ static UIImage *TBCalendarBackgroundForInfo(TBInfo info) {
     path = gIndex[@"com.apple.mobilecal"];
     [gLock unlock];
     if (!path.length) path = TBDynamicResourcePath(@"com.apple.mobilecal");
+    TBDiagEmit(@"calendar.path", nil, NULL, nil, nil, path ?: @"missing theme background");
     if (!path.length) return nil;
     UIImage *img = [[UIImage alloc] initWithContentsOfFile:path];
     if (!img) return nil;
@@ -3690,7 +3767,7 @@ static UIImage *TBCalendarBackgroundForInfo(TBInfo info) {
 }
 
 /// 从系统完整日历图中只提取星期/日期文字，过滤白色背景，避免覆盖主题底图。
-static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info, BOOL lightDate) {
+static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info) {
     if (!native || !native.CGImage) return nil;
     CGSize size = info.size.width > 1 ? info.size : native.size;
     CGFloat scale = info.scale > 0.5 ? info.scale : (native.scale > 0.5 ? native.scale : 3.0);
@@ -3728,18 +3805,10 @@ static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info, BOOL lightDa
             unsigned char *q = dst + (y * w + x) * 4;
             if (red) {
                 CGFloat a = MAX((255.0 - p[1]) / 196.0, (255.0 - p[2]) / 207.0);
-                unsigned char alpha = (unsigned char)MIN(255.0, MAX(0.0, a * 255.0));
-                // 仅在近纯黑底图转白；其他底图保留当前已验证的红色输出。
-                if (lightDate) {
-                    q[0] = q[1] = q[2] = alpha;
-                } else {
-                    q[0] = 255; q[1] = 59; q[2] = 48;
-                }
-                q[3] = alpha;
+                q[0] = 255; q[1] = 59; q[2] = 48; q[3] = (unsigned char)MIN(255.0, MAX(0.0, a * 255.0));
             } else {
-                unsigned char alpha = (unsigned char)MIN(255, MAX(0, 255 - lum));
-                q[0] = q[1] = q[2] = lightDate ? alpha : 0;
-                q[3] = alpha;
+                int a = 255 - lum;
+                q[0] = q[1] = q[2] = 0; q[3] = (unsigned char)MIN(255, MAX(0, a));
             }
         }
     }
@@ -3753,7 +3822,7 @@ static UIImage *TBCalendarTextOverlay(UIImage *native, TBInfo info, BOOL lightDa
 
 /// 设置页图标 / 通知中心 共用 UIKit 应用图标入口
 static BOOL TBUIKitIconEnabled(void) {
-    return YES;   // ★ 1.45：设置页图标开关已删除 → 恒开
+    return !gTBSettingsNativeIcon;   // ★ 1.45：设置页图标开关已删除 → 恒开
 }
 
 /// UIKit 私有 format 参数里能识别的「请求尺寸」。只用于系统原实现没给图时的兜底，
@@ -3823,6 +3892,8 @@ static UIImage *TBUIKitSizedThemeIcon(UIImage *theme, id self, SEL _cmd, id iden
 }
 
 static UIImage *tb_appIconImageForBID(id self, SEL _cmd, id identifier, int format) {
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon) return o_appIcon ? o_appIcon(self, _cmd, identifier, format) : nil;
     if (TBUIKitIconEnabled() && [identifier isKindOfClass:[NSString class]] && [identifier length]) {
         UIImage *img = TBImageForBundle(identifier);
         if (img) {
@@ -3854,6 +3925,8 @@ static UIImage *tb_appIconImageForBID(id self, SEL _cmd, id identifier, int form
 }
 
 static UIImage *tb_appIconImageForBIDScale(id self, SEL _cmd, id identifier, int format, double scale) {
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon) return o_appIconScale ? o_appIconScale(self, _cmd, identifier, format, scale) : nil;
     if (TBUIKitIconEnabled() && [identifier isKindOfClass:[NSString class]] && [identifier length]) {
         UIImage *img = TBImageForBundle(identifier);
         if (img) {
@@ -3880,6 +3953,7 @@ static UIImage *tb_appIconImageForBIDScale(id self, SEL _cmd, id identifier, int
 }
 
 static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
+    TB_RENDER_SCOPE();
     if (!TBIsThemedResourceName(name)) {
         return o_imageNamed ? o_imageNamed(self, _cmd, name) : nil;
     }
@@ -3887,18 +3961,21 @@ static UIImage *tb_imageNamed(id self, SEL _cmd, NSString *name) {
     UIImage *img = TBMatchSystemGeometry(TBResourceImage(name), sys0);
     if (img && [name hasPrefix:@"ClockIconBackground"]) img = TBClockRoundedFace(img);
     if (img) {
+        TBDiagResource(self, _cmd, name, img, @"UIImage themed resource");
         gServe++;
         if (name.length < 48) TBLogOnce([@"res2|" stringByAppendingString:name.lowercaseString],
                                         @"res2 imageNamed %@", name);
         TBLog(@"serve 资源 %@", name);
         return img;
     }
+    TBDiagResource(self, _cmd, name, sys0, @"UIImage original resource");
     return sys0;
 }
 
 /// +[UIImage imageNamed:inBundle:]、+[UIImage imageNamed:inBundle:compatibleWithTraitCollection:]
 /// SpringBoard 的时钟视图有时走这两个变体，只挂 imageNamed: 拦不到
 static UIImage *tb_imageNamedInBundle(id self, SEL _cmd, NSString *name, NSBundle *bundle) {
+    TB_RENDER_SCOPE();
     if (!TBIsThemedResourceName(name)) {
         return o_imageNamedInBundle ? o_imageNamedInBundle(self, _cmd, name, bundle) : nil;
     }
@@ -3906,22 +3983,26 @@ static UIImage *tb_imageNamedInBundle(id self, SEL _cmd, NSString *name, NSBundl
     UIImage *img = TBMatchSystemGeometry(TBResourceImage(name), sys);
     if (img && [name hasPrefix:@"ClockIconBackground"]) img = TBClockRoundedFace(img);
     if (img) {
+        TBDiagResource(self, _cmd, name, img, @"UIImage themed resource");
         gServe++;
         if (name.length < 48) TBLogOnce([@"res2|" stringByAppendingString:name.lowercaseString],
                                         @"res2 inBundle %@", name);
         TBLog(@"serve 资源(bundle) %@", name);
         return img;
     }
+    TBDiagResource(self, _cmd, name, sys, @"UIImage original resource");
     return sys;
 }
 
 static UIImage *tb_imageNamedInBundleTrait(id self, SEL _cmd, NSString *name, NSBundle *bundle, id trait) {
+    TB_RENDER_SCOPE();
     if (!TBIsThemedResourceName(name)) {
         return o_imageNamedInBundleTrait ? o_imageNamedInBundleTrait(self, _cmd, name, bundle, trait) : nil;
     }
     UIImage *sys = o_imageNamedInBundleTrait ? o_imageNamedInBundleTrait(self, _cmd, name, bundle, trait) : nil;
     UIImage *img = TBMatchSystemGeometry(TBResourceImage(name), sys);
     if (img) {
+        TBDiagResource(self, _cmd, name, img, @"UIImage themed resource");
         gServe++;
         if (name.length < 48) TBLogOnce([@"res2|" stringByAppendingString:name.lowercaseString],
                                         @"res2 inBundleTrait %@", name);
@@ -3935,6 +4016,7 @@ static UIImage *tb_imageNamedInBundleTrait(id self, SEL _cmd, NSString *name, NS
         TBLog(@"serve 资源(bundleTrait) %@", name);
         return img;
     }
+    TBDiagResource(self, _cmd, name, sys, @"UIImage original resource");
     return sys;
 }
 
@@ -3973,11 +4055,12 @@ static BOOL TBIsThemedResourceName(NSString *name) {
 static BOOL TBIsThemedResourceName(NSString *name);
 
 static UIImage *tb_imageWithFile(id self, SEL _cmd, NSString *path) {
+    TB_RENDER_SCOPE();
     if (!TBIsThemedResourceName(path.lastPathComponent)) {
         return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
     }
     UIImage *img = TBResourceImage(path);
-    if (img) { gServe++; TBLog(@"serve 资源文件 %@", path.lastPathComponent); return img; }
+    if (img) { TBDiagResource(self, _cmd, path.lastPathComponent, img, @"UIImage themed file"); gServe++; TBLog(@"serve 资源文件 %@", path.lastPathComponent); return img; }
 
     return o_imageWithFile ? o_imageWithFile(self, _cmd, path) : nil;
 }
@@ -3990,6 +4073,8 @@ static BundlePathFn o_pathForRes;
 static BundlePathDirFn o_pathForResDir;
 
 static NSString *TBResourcePathNamed(NSString *name, NSString *ext) {
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon) return nil;
     if (!name.length || TBSafeMode() || !TBEnabled()) return nil;
     [gLock lock];
     TBLoadIndex();
@@ -4007,21 +4092,27 @@ static NSString *TBResourcePathNamed(NSString *name, NSString *ext) {
 }
 
 static NSString *tb_pathForRes(id self, SEL _cmd, NSString *name, NSString *ext) {
+    TB_RENDER_SCOPE();
     if (!TBIsThemedResourceName(name)) {
         return o_pathForRes ? o_pathForRes(self, _cmd, name, ext) : nil;
     }
     NSString *p = TBResourcePathNamed(name, ext);
-    if (p) { TBLog(@"serve 资源路径 %@.%@", name, ext); return p; }
-    return o_pathForRes ? o_pathForRes(self, _cmd, name, ext) : nil;
+    if (p) { TBDiagResource(self, _cmd, name, nil, p); TBLog(@"serve 资源路径 %@.%@", name, ext); return p; }
+    NSString *nativePath = o_pathForRes ? o_pathForRes(self, _cmd, name, ext) : nil;
+    TBDiagResource(self, _cmd, name, nil, nativePath ?: @"original path nil");
+    return nativePath;
 }
 
 static NSString *tb_pathForResDir(id self, SEL _cmd, NSString *name, NSString *ext, NSString *subdir) {
+    TB_RENDER_SCOPE();
     if (!TBIsThemedResourceName(name)) {
         return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
     }
     NSString *p = TBResourcePathNamed(name, ext);
-    if (p) { TBLog(@"serve 资源路径(in) %@.%@", name, ext); return p; }
-    return o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
+    if (p) { TBDiagResource(self, _cmd, name, nil, p); TBLog(@"serve 资源路径(in) %@.%@", name, ext); return p; }
+    NSString *nativePath = o_pathForResDir ? o_pathForResDir(self, _cmd, name, ext, subdir) : nil;
+    TBDiagResource(self, _cmd, name, nil, nativePath ?: @"original path nil");
+    return nativePath;
 }
 
 #pragma mark - 桌面时钟（SBHClockApplicationIconImageView 自己合成表盘+指针，绕过图片缓存）
@@ -4155,6 +4246,7 @@ typedef id (*ClockImageSetFn)(id, SEL, void *);
 static ClockImageSetFn o_makeImageSet, o_imageSet;
 
 static void TBApplyClockImagesToSet(id set) {
+    TB_RENDER_SCOPE();
     if (!set || !TBEnabled() || TBSafeMode()) return;
     // 主题素材 → 图像集成员（名字与 SnowBoard 反编译里一致）
     struct { NSString *key; NSString *res; } map[] = {
@@ -4358,9 +4450,8 @@ static void TBBadgeCallOrig(id self, SEL _cmd) {
 ///   最后一遍恰恰把【旧主题角标】写回底板 = 换主题后旧角标赖着不走。
 ///   同一文件返回同一实例后，记录链断掉，还原一定回到系统原图。
 ///   （只在主线程 layoutSubviews 里访问，不加锁。）
-static NSMutableDictionary *gBadgeThemeImgCache;
-static NSString *gBadgeThemeImgCacheTheme;
 static UIImage *TBBadgeImageFromFileCached(NSString *path) {
+    TB_RENDER_SCOPE();
     if (!path.length) return nil;
     NSString *theme = TBActiveTheme() ?: @"";
     if (!gBadgeThemeImgCache || ![gBadgeThemeImgCacheTheme isEqualToString:theme]) {
@@ -4379,6 +4470,7 @@ static UIImage *TBBadgeImageFromFileCached(NSString *path) {
 
 /// 角标素材查找：返回图，并回填它到底来自哪个文件（日志要打完整路径）
 static UIImage *TBThemeBadgeImageWithPath(NSString **outPath) {
+    TB_RENDER_SCOPE();
     if (outPath) *outPath = nil;
 
     // ① 全局自定义素材 / 素材包（CustomBadgePath）—— 最高优先，按路径缓存
@@ -4439,6 +4531,7 @@ static UIImage *TBThemeBadgeImageWithPath(NSString **outPath) {
 /// 带日志的角标素材查找：同一主题（且"有没有素材"的结论没变）只打一次。
 /// 必打「角标：命中 <完整路径>」或「角标：没找到素材」。
 static UIImage *TBThemeBadgeImage(void) {
+    TB_RENDER_SCOPE();
     static NSString *sLoggedTheme = nil;
     static BOOL sLoggedFound = NO;
     NSString *theme = TBActiveTheme() ?: @"";
@@ -4650,6 +4743,7 @@ static int TBBadgeRelayoutTree(UIView *v, int depth) {
 }
 
 static void TBBadgeRelayoutVisible(void) {
+    TB_RENDER_SCOPE();
     @try {
         NSArray *wins = [[UIApplication sharedApplication] windows];
         for (NSUInteger i = 0; i < wins.count; i++) TBBadgeRelayoutTree(wins[i], 0);
@@ -4667,6 +4761,7 @@ static BOOL TBBadgeTreeHasOwner(UIView *root, uintptr_t tag, int depth) {
 }
 
 static void tb_badgeLayout(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
     if (![self isKindOfClass:[UIView class]]) {
         TBBadgeCallOrig(self, _cmd);
         return;
@@ -4722,8 +4817,10 @@ static void tb_badgeLayout(id self, SEL _cmd) {
             //   ② 原有 gBadgeApplied / 幂等检查保留。
             __weak UIView *wv = selfView;
             uintptr_t ownerTag = (uintptr_t)selfView;
+            TBThemeRenderState *badgeState = TBCurrentRenderState();
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
+                if (badgeState != TBCommittedState()) return;
                 UIView *v = wv;
                 if (!v) return;
                 if (!gBadgeApplied) return;                    // 已经被还原了，不要再贴回去
@@ -4767,6 +4864,7 @@ static BOOL TBIsClockView(id v) {
 /// layer.contents 的话，四角不透明就会露出方块（就是「时不时变成方的」）。
 /// 形状规则与图标完全一致（① 主题遮罩图 → ② 自定义圆角 → ③ 系统形状 → 兜底）
 static UIImage *TBClockRoundedFace(UIImage *img) {
+    TB_RENDER_SCOPE();
     // 表盘与普通图标统一走形状、玻璃叠加和阴影；不写 layer.contents。
     UIImage *shaped = TBApplyIconShape(img, NO);
     return TBApplyIconEffects(shaped) ?: shaped;
@@ -4791,9 +4889,8 @@ static void TBClockClearMappedContents(UIView *v, BOOL clearLayer) {
 }
 
 static UIImage *TBClockMaterialFace(UIView *v) {
+    TB_RENDER_SCOPE();
     if (!v) return nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ gClockFaceCache = [[NSCache alloc] init]; gClockFaceCache.countLimit = 8; });
     NSString *key = [NSString stringWithFormat:@"%@|%.0fx%.0f|%.1f", TBActiveTheme() ?: @"",
                      v.bounds.size.width, v.bounds.size.height, [UIScreen mainScreen].scale];
     UIImage *ready = [gClockFaceCache objectForKey:key];
@@ -4813,9 +4910,12 @@ static UIImage *TBClockMaterialFace(UIView *v) {
 }
 
 static id tb_clockContentsImage(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
+    TBDiagEmit(@"clock.enter", self, _cmd, nil, nil, sInClockContents ? @"shared guard=1" : @"shared guard=0");
     if (!sInClockContents && TBIsClockView(self)) {
         UIImage *face = TBClockMaterialFace((UIView *)self);
         if (face) {
+            TBDiagEmit(@"clock.theme", self, _cmd, face, nil, @"material face");
             TBLogOnce(@"clockface|contents", @"时钟表盘：contentsImage 返回主题表盘 %.0fx%.0f",
                       face.size.width, face.size.height);
             return face;
@@ -4826,19 +4926,23 @@ static id tb_clockContentsImage(id self, SEL _cmd) {
     sInClockContents = YES;
     id r = o_contentsImageLive(self, _cmd);
     sInClockContents = NO;
+    TBDiagEmit(@"clock.original", self, _cmd, r, nil, @"after original");
     return r;
 }
 
 static id tb_clockSquareContentsImage(id self, SEL _cmd) {
+    TB_RENDER_SCOPE();
+    TBDiagEmit(@"clock.enter", self, _cmd, nil, nil, sInClockContents ? @"shared guard=1" : @"shared guard=0");
     if (!sInClockContents && TBIsClockView(self)) {
         UIImage *face = TBClockMaterialFace((UIView *)self);
-        if (face) return face;
+        if (face) { TBDiagEmit(@"clock.theme", self, _cmd, face, nil, @"material face"); return face; }
     }
     if (sInClockContents) return nil;
     if (!o_squareContentsImageLive) return nil;
     sInClockContents = YES;
     id r = o_squareContentsImageLive(self, _cmd);
     sInClockContents = NO;
+    TBDiagEmit(@"clock.original", self, _cmd, r, nil, @"after original");
     return r;
 }
 
@@ -4978,6 +5082,7 @@ static void TBInstall(void) {
 
     // 日历专用提供者：系统在原生提供者里生成星期和日期。
     TBInstallCalendarProviderHooks();
+    TBDiagProbeOnce();
 
     // ★★★ 通知中心图标：0.15.89 起永久封存。
     //   照 SystemX 1.5-8 的 NCBadgedIconView 五连 hook（init×2/set×2/layout）实测：
@@ -5019,62 +5124,22 @@ static void TBInstall(void) {
         //（三根一样粗、橙秒针消失）。改由资源重定向提供 ClockIconBackgroundSquare，
         // 让系统自己合成底图与指针 —— 与 SnowBoard 一致。
 
-    // PSSpecifier 设置页图标（iOS 17.2+ 使用此通道）
-    if (spec && !gDoneSpecifier) {
-        gDoneSpecifier = YES;
-        if (TBHasMethod(spec, @"setupIconImageWithBundle:")) {
-            o_setupIconBundle = (SetupIconFn)TBHook(spec, @"setupIconImageWithBundle:",
-                                                    (IMP)tb_setupIconWithBundle, "PSSpecifier 设置页图标");
-        }
-        // 设置列表 App 行：PSTableCell 内置 imageView（29×29）才是真正的图标出口
-        // ★ 0.16.6：**不再** hook UIImageView -setImage:（那是滚动热路径，图/箭头/占位都要过一遍 → 设置卡死）。
-        //   改为"批量扫描可见行"的方式，见 TBRefreshSettingsIconsBatch()。
-        // 0.16.8：cell 复用时补一次（不在 setImage 热路径，只在整行复用时触发）
-        if ([[NSProcessInfo processInfo].processName isEqualToString:@"Preferences"]) {
-            Class cellCls = NSClassFromString(@"UITableViewCell");
-            if (cellCls && TBHasMethod(cellCls, @"prepareForReuse")) {
-                o_prepareReuse = (void (*)(id, SEL))TBHook(cellCls, @"prepareForReuse",
-                                                           (IMP)tb_prepareReuse, "cell 复用补图");
-            }
-        }
-
-        Class psCell = NSClassFromString(@"PSTableCell");
-        if (psCell) {
-            if (TBHasMethod(psCell, @"refreshCellContentsWithSpecifier:"))
-                o_psRetRefresh = (void (*)(id, SEL, id))TBHook(psCell, @"refreshCellContentsWithSpecifier:",
-                                                               (IMP)tb_psRefresh, "PSTableCell 行图标");
-            if (TBHasMethod(psCell, @"setSpecifier:"))
-                o_psRetSetSpec = (void (*)(id, SEL, id))TBHook(psCell, @"setSpecifier:",
-                                                              (IMP)tb_psSetSpec, "PSTableCell setSpecifier");
-        }
-        if (TBHasMethod(spec, @"icon")) {
-            o_specIcon = (UIImage *(*)(id, SEL))TBHook(spec, @"icon", (IMP)tb_specIcon, "PSSpecifier.icon");
-        }
-        if (TBHasMethod(spec, @"setIcon:")) {
-            o_specSetIcon = (void (*)(id, SEL, id))TBHook(spec, @"setIcon:", (IMP)tb_specSetIcon, "PSSpecifier.setIcon");
-        }
+    if (spec && !gDoneSpecifier && ![TBProcName() isEqualToString:@"Preferences"]) {
+        gDoneSpecifier=YES;
+        if (TBHasMethod(spec,@"setupIconImageWithBundle:"))
+            o_setupIconBundle=(SetupIconFn)TBHook(spec,@"setupIconImageWithBundle:",
+                (IMP)tb_setupIconWithBundle,"PSSpecifier 设置页图标");
     }
-
-    // 设置进程：启动后（以及收到 changed 后）批量替换可见行的图标
-    if ([[NSProcessInfo processInfo].processName isEqualToString:@"Preferences"]) {
-        for (double d = 0.9; d <= 3.2; d += 0.7) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ TBRefreshSettingsIconsBatch(@"启动"); });
-        }
-        // ★ 0.16.7：系统会在之后（滚动/复用/reloadData）把原图写回，症状是"过一会又变回默认"。
-        //   这里加一个很轻的定时补刷：每 1.2 秒只扫【可见行】并做一次字典比对，命中已正确就跳过。
-        static NSTimer *sTimer = nil;
-        if (!sTimer) {
-            sTimer = [NSTimer timerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *t) {
-                TBRefreshSettingsIconsBatch(@"定时");
-            }];
-            sTimer.tolerance = 0.3;
-            [[NSRunLoop mainRunLoop] addTimer:sTimer forMode:NSRunLoopCommonModes];
-            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification
-                                                              object:nil queue:[NSOperationQueue mainQueue]
-                                                          usingBlock:^(NSNotification *n) { [sTimer invalidate]; }];
-            TBLog(@"设置页图标：已启动定时补刷（3.0s，滚动中跳过，只扫 keyWindow 可见行）");
-        }
+    // Independent original slots permit the existing finite installation retries.
+    if ([TBProcName() isEqualToString:@"Preferences"]) {
+        Class cell=NSClassFromString(@"PSTableCell");
+        TBPSInstallMethod(cell,NSSelectorFromString(@"getIcon"),(IMP)tb_psGetIcon,&o_tbPSGetIcon,"@@:");
+        TBPSInstallMethod(cell,NSSelectorFromString(@"getLazyIcon"),(IMP)tb_psGetLazyIcon,&o_tbPSGetLazyIcon,"@@:");
+        TBPSInstallMethod(cell,NSSelectorFromString(@"getIconFromIconServices"),
+                          (IMP)tb_psGetIconFromServices,&o_tbPSGetIconFromServices,"@@:");
+        TBPSInstallMethod(cell,NSSelectorFromString(@"setIcon:"),(IMP)tb_psSetIcon,&o_tbPSSetIcon,"v@:@");
+        TBPSInstallMethod(cell,NSSelectorFromString(@"prepareForReuse"),
+                          (IMP)tb_psPrepareForReuse,&o_tbPSPrepareForReuse,"v@:");
     }
 
     // UIActivity 分享面板图标（运行时检测）
@@ -5406,117 +5471,46 @@ static void TBPurgeIcons(id cache, NSArray *icons) {
 ///   这里不再保留独立函数 —— 通知逻辑只有这一处使用方。）
 
 /// 正在执行的那次刷新序号（延迟任务用它判断自己是不是过期了）
-static NSUInteger gReloadRunSeq = 0;
+// Every notification invalidates any in-flight preparation. Only the last
+// generation may be published or acknowledged.
+static int gApplyReplyToken = NOTIFY_TOKEN_INVALID;
+
+static uint64_t TBApplyID(NSDictionary *values) {
+    id value = values[@"ApplyRequestID"];
+    return [value respondsToSelector:@selector(unsignedLongLongValue)] ?
+           [value unsignedLongLongValue] : 0;
+}
+
+static void TBConfirmPublishedState(TBThemeRenderState *state) {
+    if (![[NSProcessInfo processInfo].processName isEqualToString:@"SpringBoard"] ||
+        gApplyReplyToken == NOTIFY_TOKEN_INVALID || state != TBCommittedState()) return;
+    uint64_t requestID = TBApplyID(state->preferences);
+    if (!requestID) return;
+    CFPreferencesAppSynchronize((__bridge CFStringRef)kDomain);
+    NSDictionary *latest = TBReadPreferenceValues();
+    if (TBApplyID(latest) != requestID || ![latest isEqualToDictionary:state->preferences]) return;
+    if (notify_set_state(gApplyReplyToken, requestID) == NOTIFY_STATUS_OK) {
+        notify_post("com.ning.themeboard.apply.completed");
+        TBLog(@"主题提交完成，回执请求=%llu", (unsigned long long)requestID);
+    }
+}
 
 static void TBRunReload(NSUInteger mySeq, NSString *why);
 
-/// ---------------------------------------------------------------------------
-/// 刷新入口：**节流 + 去重 + 熔断**
-///
-/// 0.15.48 真机日志（shared-08E9891B_engine.log，8 分钟）实锤的卡死原因：
-///   「设置变更：重建索引」出现 256 次、「已通知 SpringBoard 刷新图标」89 次，
-///   后段稳定每 3~4 秒一次（01:04:23/24/26/28/31/35…）→ 主线程一直泡在
-///   【重建索引 + 全量清缓存 + 窗口树遍历重贴 95 个图标视图 + noteIconStateChangedExternally】
-///   里，最后 SpringBoard 被看门狗打死 / 用户看到卡死 + 回桌面。
-///
-/// 这里做三件事：
-///   ① 合并：0.8s 冷却窗口内的重复请求合并成一次（延迟执行，不丢最后一次）
-///   ② 熔断：10s 窗口内超过 8 次直接忽略 3s（风暴保护，防止连锁刷新自激）
-///   ③ 每条都带「触发者 + 计数」，方便回看是谁在刷（Darwin 通知不带发送者 PID）
-/// ---------------------------------------------------------------------------
 static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n,
                      const void *obj, CFDictionaryRef info) {
-    TBInvalidatePreferenceCache();
-    static NSLock *sGate = nil;
-    static NSUInteger sReq = 0, sWinCount = 0, sRunCount = 0, sSuppressed = 0;
-    static NSTimeInterval sWinStart = 0, sLastRun = 0, sBreakerUntil = 0;
-    static BOOL sScheduled = NO, sSaidNoPid = NO;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        sGate = [[NSLock alloc] init];
-        sSaidNoPid = NO;
+    // UIKit and all generation transitions are owned by the main thread.
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ TBReload(NULL, NULL, NULL, NULL, NULL); });
+        return;
+    }
+    NSUInteger sequence = ++gReloadRunSeq;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (sequence == gReloadRunSeq) TBRunReload(sequence, @"偏好变更");
     });
-
-    const NSTimeInterval kCooldown = 3.0;   // 冷却窗口（0.15.90：0.8→3.0，17 次/秒的刷新风暴会压死 SpringBoard）
-    const NSTimeInterval kWindow   = 10.0;  // 统计窗口
-    const NSTimeInterval kBreaker  = 3.0;   // 熔断时长
-    const NSUInteger   kWindowMax  = 8;     // 窗口内允许的最大执行次数
-
-    NSString *why = @"Darwin通知";
-    @try { if (n) why = [NSString stringWithFormat:@"Darwin通知 %@", (__bridge NSString *)n]; }
-    @catch (NSException *e) { }
-
-    [sGate lock];
-    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    sReq++;
-    if (sWinStart <= 0 || now - sWinStart > kWindow) { sWinStart = now; sWinCount = 0; sSuppressed = 0; }
-    sWinCount++;
-
-    if (now < sBreakerUntil) {
-        sSuppressed++;
-        NSTimeInterval left = sBreakerUntil - now;
-        [sGate unlock];
-        if (sSuppressed == 1 || sSuppressed % 50 == 0) {
-            TBLog(@"刷新熔断中：忽略第 %lu 次请求（触发者=%@，还剩 %.1fs）", (unsigned long)sSuppressed, why, left);
-        }
-        return;
-    }
-
-    if (sWinCount > kWindowMax) {
-        sBreakerUntil = now + kBreaker;
-        sSuppressed = 0;
-        NSUInteger win = sWinCount;
-        [sGate unlock];
-        TBLog(@"刷新风暴！%.0fs 内收到 %lu 次刷新请求（第 %lu 次触发者=%@）→ 熔断 %.1fs 内不再刷新"
-              @"（日志里【本条】之前的『设置变更/阴影/全局效果』重复行就是刷新链在自激）",
-              kWindow, (unsigned long)win, (unsigned long)sReq, why, kBreaker);
-        return;
-    }
-
-    NSTimeInterval since = (sLastRun > 0) ? (now - sLastRun) : 1e9;
-    if (sLastRun > 0 && since < kCooldown) {
-        BOOL needSchedule = !sScheduled;
-        sScheduled = YES;
-        NSUInteger win = sWinCount;
-        [sGate unlock];
-        TBLog(@"刷新合并：距上次仅 %.2fs（< %.1fs 冷却，触发者=%@，本窗口第 %lu 次）→ 合并成一次",
-              since, kCooldown, why, (unsigned long)win);
-        if (needSchedule) {
-            int64_t delayNs = (int64_t)((kCooldown - since) * (double)NSEC_PER_SEC);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delayNs), dispatch_get_main_queue(), ^{
-                [sGate lock];
-                sScheduled = NO;
-                sLastRun = [NSDate timeIntervalSinceReferenceDate];
-                sRunCount++;
-                NSUInteger seq = ++gReloadRunSeq;
-                NSUInteger run = sRunCount;
-                NSUInteger req = sReq;
-                [sGate unlock];
-                TBLog(@"设置变更（合并后执行）：累计请求 %lu 次 / 实际执行 %lu 次", (unsigned long)req, (unsigned long)run);
-                TBRunReload(seq, @"合并延迟执行");
-            });
-        }
-        return;
-    }
-
-    sLastRun = now;
-    sRunCount++;
-    NSUInteger seq = ++gReloadRunSeq;
-    NSUInteger run = sRunCount, req = sReq;
-    BOOL first = !sSaidNoPid;
-    sSaidNoPid = YES;
-    [sGate unlock];
-
-    TBLog(@"刷新开始：触发者=%@（累计请求 %lu 次 / 实际执行 %lu 次）", why,
-          (unsigned long)req, (unsigned long)run);
-    if (first) {
-        TBLog(@"说明：Darwin 通知不带发送者，看不到是谁 post 的；若这里持续刷屏，"
-              @"说明有进程在反复 post com.ning.themeboard.changed（通常是 App 的滑块/开关在连点）");
-    }
-    TBRunReload(seq, why);
 }
 
-/// 轻量刷新：只把屏幕上可见的 UITableView 重载一遍（让设置页那列行重新取图标）
 static void TBRefreshVisibleTablesLight(NSString *why) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
@@ -5527,10 +5521,7 @@ static void TBRefreshVisibleTablesLight(NSString *why) {
                 UIView *v = stack.firstObject;
                 [stack removeObjectAtIndex:0];
                 n++;
-                if ([v isKindOfClass:[UITableView class]]) {
-                    [(UITableView *)v reloadData];
-                    hit++;
-                }
+                if ([v isKindOfClass:[UITableView class]]) { [(UITableView *)v reloadData]; hit++; }
                 [stack addObjectsFromArray:[v.subviews copy]];
             }
             if (hit) TBLog(@"轻量刷新(%@)：reloadData %ld 个表格", why ?: @"?", (long)hit);
@@ -5538,210 +5529,131 @@ static void TBRefreshVisibleTablesLight(NSString *why) {
     });
 }
 
-static void TBRunReload(NSUInteger mySeq, NSString *why) {
-    TBLog(@"重活开始：%@", why);
-    // ★ 0.15.92：重活只在 SpringBoard（真正有桌面图标缓存的进程）里做。
-    //   日志实锤：App 进程/其它进程收到 changed 也会跑「重建索引 + 清缓存 + 通知重取」，
-    //   主线程被占住 1~2 秒 —— 表现就是「点了应用主题后，弹窗还在时点不动，等它消失才恢复」。
-    {
-        static int sHeavyHost = -1;
-        if (sHeavyHost < 0) {
-            NSString *pn = [NSProcessInfo processInfo].processName ?: @"";
-            sHeavyHost = [pn isEqualToString:@"SpringBoard"] ? 1 : 0;
-            TBLog(@"重活宿主=%@ → %@", pn, sHeavyHost ? @"执行" : @"只清本地索引（跳过清缓存/通知重取/heal/角标/时钟）");
+// Collect once on the main thread. Prewarming does not mutate views or system
+// caches, so the previously committed generation remains visible throughout.
+static NSArray<UIView *> *TBVisibleIconViews(void) {
+    NSMutableArray<UIView *> *views = [NSMutableArray array];
+    NSMutableArray<UIView *> *stack = [NSMutableArray array];
+    for (UIView *window in [[UIApplication sharedApplication] windows])
+        [stack addObject:window];
+    NSUInteger scanned = 0;
+    while (stack.count && scanned++ < 12000) {
+        UIView *view = stack.lastObject;
+        [stack removeLastObject];
+        if ([view respondsToSelector:NSSelectorFromString(@"icon")]) {
+            [views addObject:view];
+            if (!gSeenIconViews) gSeenIconViews = [NSHashTable weakObjectsHashTable];
+            [gSeenIconViews addObject:view];
         }
-        if (!sHeavyHost) {
-            [gLock lock];
-            gIndex = nil; gBundleRes = nil; gBundleResTheme = nil;
-            [gLock unlock];
-            TBLog(@"重活跳过（非 SpringBoard，只做轻量刷新）：%@", why);
-            TBRefreshVisibleTablesLight(why);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{ TBRefreshSettingsIconsBatch(@"通知"); });
+        [stack addObjectsFromArray:[view.subviews copy]];
+    }
+    return views;
+}
+
+static void TBRunReload(NSUInteger mySeq, NSString *why) {
+    if (mySeq != gReloadRunSeq) return;
+    CFPreferencesAppSynchronize((__bridge CFStringRef)kDomain);
+    NSDictionary *values = TBReadPreferenceValues();
+    TBThemeRenderState *candidate = [[TBThemeRenderState alloc]
+        initWithPreferences:values generation:mySeq];
+    NSString *theme = [values[@"ActiveTheme"] isKindOfClass:[NSString class]] ? values[@"ActiveTheme"] : nil;
+    if (theme.length && (!values[@"Enabled"] || [values[@"Enabled"] boolValue]) &&
+        ![values[@"SafeMode"] boolValue]) {
+        TB_RENDER_WITH(candidate);
+        if (!TBThemeDir(theme).length) {
+            TBLog(@"主题未找到，保留原图且不回执：%@", theme);
             return;
         }
     }
-    [gLock lock];
-    gIndex = nil;
-    gBundleRes = nil;          // 强制重建资源表（含时钟/日历素材）
-    gBundleResTheme = nil;
-    // 遮罩图是按「主题名」缓存的：设置一变（例如 App 刚导入遮罩）就允许重扫，
-    // 否则导入完必须换主题 / 重启才看得到新形状
-    gMaskThemeChecked = NO;
-    gMaskThemeKey = nil;
-    gMaskThemeImg = nil;
-    // 全局效果缓存【不再每次清空】：以前这里 gGlobalImgCache = nil，
-    // 于是每次刷新（日志里 256 次）都要把所有图标重新套一遍形状+特效；
-    // 现在缓存键里带「主题+特效参数指纹」，参数没变就直接命中。
-    // 同理：叠加层 / 阴影素材也是按主题名缓存的
-    for (int i = 0; i < 2; i++) { gFxChecked[i] = NO; gFxKey[i] = nil; gFxImg[i] = nil; }
-    NSArray *caches = gCaches.allObjects;
-    [gLock unlock];
-    TBLog(@"设置变更：重建索引，清理 %lu 个缓存", (unsigned long)caches.count);
-
-    // 注意：缓存写入端被我们接管后，换主题必须通知图标视图重取，
-    // 这一步不能受「清缓存」开关控制（之前那版会被它一票否决 → 只能重启才刷新）
-    BOOL allowPurge = NO;                              // 0.18.3：默认关（与设置页一致）
-    id pv = TBPref(@"PurgeCache");
-    if (pv) allowPurge = [pv boolValue];
-    if (!allowPurge) TBLog(@"清缓存开关关闭：跳过逐个清缓存，仍执行图标重取");
-
-    [gImageCache removeAllObjects];
-    TBClockInvalidateCache();
-    // ★ 1.43（用户选 A：换主题后遮罩残留）：形状/特效类缓存也要跟着失效。
-    //   gMaskThemeImg 按主题名缓存 → 同名主题重导素材时会命中旧值；
-    //   gGlobalImgCache 是「全局效果成品」（按 bid+尺寸），不清就会把旧遮罩贴回去；
-    //   gSquareFillCache 是补方角结果（按原图指针）。
-    gMaskThemeKey = nil;
-    gMaskThemeChecked = NO;
-    gMaskThemeImg = nil;
-    @synchronized ([UIImage class]) {
-        [gGlobalImgCache removeAllObjects];
-        gGlobalCacheTheme = nil;
-        [gSquareFillCache removeAllObjects];
+    BOOL springboard = [[NSProcessInfo processInfo].processName isEqualToString:@"SpringBoard"];
+    if (!springboard) {
+        TBDiagEmit(@"publish.before", nil, NULL, nil, nil, @"before publish");
+        TBPublishRenderState(candidate);
+        TBDiagEmit(@"publish.after", nil, NULL, nil, nil, @"after publish");
+        TBRefreshVisibleTablesLight(why);
+        return;
     }
-    // ★ 1.44：学到的"系统遮罩形状"也必须清 —— 它可能是上一个主题的形状
-    gSystemMaskTemplate = nil;
-    TBLog(@"换主题：已清遮罩/全局效果/补方角缓存（含学到的系统形状）");
-    {
-        // gFitCache 是普通 NSMutableDictionary，读端（TBFitCached）只在写入时短暂拿 gLock。
-        // 这里原来裸清：darwin 回调线程正在读/写时并发 removeAllObjects 会偶发崩溃。
-        [gLock lock];
-        [gFitCache removeAllObjects];
-        [gLock unlock];
+    NSArray<UIView *> *views = TBVisibleIconViews();
+    NSMutableOrderedSet<NSString *> *bids = [NSMutableOrderedSet orderedSet];
+    @try {
+        TB_RENDER_WITH(candidate);
+        TBLoadIndex();
+        (void)TBThemeMaskImage();
+        (void)TBThemeOverlayImage();
+        (void)TBThemeShadowImage();
+        // Clock and calendar use their own live-icon pipelines after commit.
+        for (UIView *view in views) {
+            id icon = ((id (*)(id, SEL))objc_msgSend)(view, NSSelectorFromString(@"icon"));
+            NSString *bid = TBBIDFromIcon(icon);
+            if (bid.length && ![bid isEqualToString:@"com.apple.mobilecal"] &&
+                ![bid isEqualToString:@"com.apple.mobiletimer"])
+                [bids addObject:bid];
+        }
+    } @catch (NSException *e) {
+        TBLog(@"主题准备失败（旧图保持）：%@", e.reason); return;
     }
-
-    // 主线程：先（可选）分批清缓存，再通知图标视图重取，最后让 SpringBoard 重排
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // 0.15.53：角标还原 + 屏上角标素材缓存失效【延后一个 tick】——
-        // 它要逐个写回 plate.layer.contents，应用主题回桌面的第一帧别让它插队
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (mySeq != gReloadRunSeq) return;
-            // 角标还原（0.15.49 根因修复）：换主题 / 关角标开关 / 取消应用 / 任何设置变更
-            // 都要先把上次换上的底板写回【系统原图】—— 否则旧角标一直赖在图标上。
-            if (gBadgeApplied) TBBadgeRestoreAll(@"设置变更（换主题/开关/取消应用）");
-            // 角标素材图缓存按主题名失效：App 往同一主题里重导/覆盖 SBBadgeBG 素材后，
-            // 旧主题名命中不了变化 —— 这里跟着 TBReload 一起清（主线程，与读端同队列）
-            gBadgeThemeImgCache = nil;
-            gBadgeThemeImgCacheTheme = nil;
-        });
-
-        // 先撤掉转场代理，再清理旧时钟图层；恢复默认的重建放在覆盖清除之后。
+    NSArray<NSString *> *pending = bids.array;
+    __block NSUInteger cursor = 0;
+    __block void (^prepare)(void) = nil;
+    prepare = ^{
+        if (mySeq != gReloadRunSeq) { prepare = nil; return; }
+        @try {
+            TB_RENDER_WITH(candidate);
+            NSUInteger end = MIN(cursor + 18, pending.count);
+            for (; cursor < end; cursor++) {
+                UIImage *image = TBImageForBundle(pending[cursor]);
+                if (image.CGImage) (void)CGImageGetWidth(image.CGImage);
+            }
+        } @catch (NSException *e) {
+            TBLog(@"图像准备失败（旧图保持）：%@", e.reason);
+            prepare = nil; return;
+        }
+        if (cursor < pending.count) {
+            dispatch_async(dispatch_get_main_queue(), prepare);
+            return;
+        }
+        prepare = nil;
+        if (mySeq != gReloadRunSeq) return;
+        CFPreferencesAppSynchronize((__bridge CFStringRef)kDomain);
+        if (![values isEqualToDictionary:TBReadPreferenceValues()]) {
+            TBLog(@"准备期间偏好变化，弃用过期图像"); return;
+        }
+        // Publish and update visible carriers in one disabled-animation transaction.
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        TBDiagEmit(@"publish.before", nil, NULL, nil, nil, @"before publish");
+        TBPublishRenderState(candidate);
+        TBDiagEmit(@"publish.after", nil, NULL, nil, nil, @"after publish");
         TBCrossfadeRestoreAll();
-        NSMutableArray *clockViews = [NSMutableArray array];
-        for (UIView *w in [[UIApplication sharedApplication] windows]) {
-            NSMutableArray *stack = [NSMutableArray arrayWithObject:w];
-            while (stack.count) {
-                UIView *vv = stack.lastObject; [stack removeLastObject];
-                if ([NSStringFromClass([vv class]) rangeOfString:@"Clock"].location != NSNotFound)
-                    [clockViews addObject:vv];
-                [stack addObjectsFromArray:vv.subviews];
-                if (stack.count > 12000) break;
-            }
-        }
-        for (UIView *cv in clockViews) TBClockClearMappedContents(cv, YES);
+        if (gBadgeApplied) TBBadgeRestoreAll(@"主题切换");
         NSArray *icons = TBAllIcons();
-        NSArray *cacheList = caches;
-
-        // 说明：换主题/还原系统时必须真的清掉图标缓存，否则系统会继续用旧图
-        //（时钟底图赖着不走就是这个原因）。开关只用来限制「全量清」的规模，
-        // 不再一票否决；这里始终按上限分批清。
-        if (icons.count == 0) {
-                // 拿不到图标列表时不做全量清缓存：一次性清掉上千张图会引发重绘尖峰，
-                // 交给下面的窗口遍历按需清理（只碰屏幕上的几十个图标）。
-                TBLog(@"拿不到图标列表：跳过全量清缓存，改由窗口遍历按需清理");
-            } else {
-                // ★ 0.15.69：分批清缓存改成【异步链】。原来 while+usleep(20ms) 仍在主线程
-                //   同步占用（N 批 × 20ms），单独用遮罩/边框/阴影回桌面就是撞上这里。
-                //   现在每批 dispatch_async，批间让出主线程；总时长不变，但不再卡帧。
-                const NSUInteger chunk = 30;
-                __block NSUInteger i = 0;
-                __block NSInteger round = 0;
-                __block void (^drainPurge)(void) = nil;
-                drainPurge = ^{
-                    if (i >= icons.count) {
-                        TBLog(@"已分批清理 %lu 个图标的缓存（%ld 批，异步）",
-                              (unsigned long)icons.count, (long)round);
-                        drainPurge = nil;
-                        return;
-                    }
-                    NSUInteger n = MIN(chunk, icons.count - i);
-                    NSArray *part = [icons subarrayWithRange:NSMakeRange(i, n)];
-                    for (id cache in cacheList) { TBPurgeIcons(cache, part); }
-                    i += n;
-                    round++;
-                    dispatch_async(dispatch_get_main_queue(), drainPurge);
-                };
-                dispatch_async(dispatch_get_main_queue(), drainPurge);
+        NSArray *caches = gCaches.allObjects;
+        if (icons.count) for (id cache in caches) TBPurgeIcons(cache, icons);
+        BOOL overrideOK = NSClassFromString(@"SBIconView") &&
+            [NSClassFromString(@"SBIconView") instancesRespondToSelector:NSSelectorFromString(@"setOverrideImage:")];
+        NSInteger updated = overrideOK ? TBReapplyIconsLight() : 0;
+        if (!overrideOK || updated == 0) {
+            // The old compatibility path is asynchronous. Do not claim completion.
+            TBHealAllIconViews();
+            TBRefreshSpringBoard(why);
         }
-
-        // 0.15.53：通知图标视图重取改为【分批异步】。原来是同步循环 O(图标数 × 缓存数)，
-        // 主题覆盖几百个图标时这一下能把主线程按住几百毫秒（应用主题回桌面卡顿主因之一）。
-        // 每批 40 个图标 dispatch_async，批间让出主线程；总量超上限时仍走窗口遍历兜底。
-        if (icons.count > 0 && icons.count <= 250) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [gLock lock];
-                NSArray *cacheList2 = gCaches.allObjects;
-                [gLock unlock];
-                SEL upd = NSSelectorFromString(@"notifyObserversOfUpdateForIcon:");
-                SEL updU = NSSelectorFromString(@"notifyObserversOfUnmaskedUpdateForIcon:");
-                __block NSInteger sent = 0;
-                const NSUInteger kChunk = 40;
-                __block NSUInteger idx = 0;
-                __block void (^drainNotify)(void) = nil;
-                drainNotify = ^{
-                    if (idx >= icons.count) {
-                        TBLog(@"已通知图标视图重取 %ld 次（分批异步）", (long)sent);
-                        drainNotify = nil;
-                        return;
-                    }
-                    NSUInteger end = MIN(idx + kChunk, icons.count);
-                    NSArray *part = [icons subarrayWithRange:NSMakeRange(idx, end - idx)];
-                    for (id cache in cacheList2) {
-                        BOOL canUpd = [cache respondsToSelector:upd];
-                        BOOL canUpdU = [cache respondsToSelector:updU];
-                        if (!canUpd && !canUpdU) continue;
-                        for (id icon in part) {
-                            @try {
-                                if (canUpd) ((void (*)(id, SEL, id))objc_msgSend)(cache, upd, icon);
-                                if (canUpdU) ((void (*)(id, SEL, id))objc_msgSend)(cache, updU, icon);
-                                sent++;
-                            } @catch (NSException *e) { }
-                        }
-                    }
-                    idx = end;
-                    dispatch_async(dispatch_get_main_queue(), drainNotify);
-                };
-                dispatch_async(dispatch_get_main_queue(), drainNotify);
-            });
-        } else {
-            TBLog(@"图标数 %lu 超过通知上限，跳过逐个通知，改用窗口遍历刷新", (unsigned long)icons.count);
-        }
-        // ★ 0.18.18（方案 B）：把「重贴 + 刷新桌面 + 角标重排」合并成【一次】，
-        //   并关掉 Core Animation 的隐式动画。
-        //   以前是 0.2s / 0.35s / 0.45s 三波重画，肉眼就是那道"闪/印子"；
-        //   现在只发生一次瞬间切换，没有渐变过程可看。
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (mySeq != gReloadRunSeq) return;
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            BOOL overrideOK = NSClassFromString(@"SBIconView") &&
-                              [NSClassFromString(@"SBIconView") instancesRespondToSelector:NSSelectorFromString(@"setOverrideImage:")];
-            if (overrideOK && TBReapplyIconsLight() > 0) {
-                TBLog(@"应用完成：走 override 轻量刷新（不再批量重贴/刷桌面）");
-            } else {
-                TBLog(@"应用完成：回退一次性重贴 + 刷新（无动画）");
-                TBHealAllIconViews();
-                TBRefreshSpringBoard(why);
-            }
-            // 默认表盘必须在旧图层与本引擎外观覆盖撤销后重建，避免刚恢复又被清空。
-            if (!TBActiveTheme().length) TBRefreshClockViewsNow();
-            TBBadgeRelayoutVisible();
-            [CATransaction commit];
+        TBRefreshDynamicIconViewsNow();
+        TBDiagCaptureLiveViews(@"after refresh");
+        if (TBDiagEnabled()) dispatch_async(dispatch_get_main_queue(), ^{
+            if (mySeq != gReloadRunSeq || candidate != TBCommittedState()) return;
+            TBDiagCaptureLiveViews(@"next main tick");
         });
-    });
+        TBBadgeRelayoutVisible();
+        if (overrideOK && updated > 0) {
+            [CATransaction setCompletionBlock:^{
+                if (mySeq == gReloadRunSeq) TBConfirmPublishedState(candidate);
+            }];
+        }
+        [CATransaction commit];
+        TBLog(@"主题代次 %lu 提交，预热 %lu 图，重设 %ld 视图", (unsigned long)mySeq,
+              (unsigned long)pending.count, (long)updated);
+    };
+    dispatch_async(dispatch_get_main_queue(), prepare);
 }
 
 /// App 请求重启桌面：让 SpringBoard 退出，系统会自动把它拉起来（等效 respring）
@@ -5771,8 +5683,10 @@ static void TBMain(void) {
     gIsPrimary = [pname isEqualToString:@"SpringBoard"] ||
                  [pname rangeOfString:@"iconservicesagent"].location != NSNotFound;
     gLock = [[NSLock alloc] init];
-    gImageCache = [[NSCache alloc] init];
-    gImageCache.countLimit = 600;
+    (void)TBCommittedState();
+    if ([pname isEqualToString:@"SpringBoard"] &&
+        notify_register_check("com.ning.themeboard.apply.completed", &gApplyReplyToken) != NOTIFY_STATUS_OK)
+        gApplyReplyToken = NOTIFY_TOKEN_INVALID;
     if (hasCache) {
         TBLog(@"=== ThemeBoardEngine 加载 pid=%d ===", getpid());
         TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");

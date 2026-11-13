@@ -3,6 +3,8 @@
 // 与引擎共享的偏好域。全部走 CFPreferences + Darwin 通知，App 和注入进程互不依赖。
 extern NSString *const TBDefaultsDomain;
 extern NSString *const TBNotifyChanged;
+extern NSString *const TBNotifyApplyCompleted;
+extern NSString *const TBKeyApplyRequestID; // NSNumber，非 0 的随机 63-bit 请求 ID
 
 extern NSString *const TBKeyEnabled;        // BOOL 总开关
 extern NSString *const TBKeyActiveTheme;    // NSString 主题名
@@ -34,6 +36,10 @@ extern NSString *const TBKeyGlassOverlayStrength;  // double 玻璃叠加层强�
 + (void)setDouble:(double)value forKey:(NSString *)key;
 
 + (void)synchronize;
+// 300ms 合并发送；新的变更会使前一个待确认请求以 NO 结束。
 + (void)notifyChanged;
+// 偏好写完后调用。主队列恰好回调一次；只有匹配最新请求的 SpringBoard 回执为 YES。
+// 超时（12 秒）、同步/注册失败、被新变更替代均为 NO；不代表偏好已回滚。
++ (void)notifyChangedWithCompletion:(void (^)(BOOL confirmed))completion;
 
 @end

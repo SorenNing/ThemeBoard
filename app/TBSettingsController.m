@@ -8,10 +8,12 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "TBDocImport.h"
 #import "TBSpacing.h"
+#import "TBToast.h"
 
 @interface TBSettingsController () <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<NSArray<NSDictionary *> *> *model;
 @property (nonatomic, strong) NSTimer *runtimeTimer;
+@property (nonatomic, assign) NSUInteger applyFeedbackGeneration;
 @end
 
 @implementation TBSettingsController
@@ -89,6 +91,7 @@
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    self.applyFeedbackGeneration++;
     [self.runtimeTimer invalidate]; self.runtimeTimer = nil;
 }
 
@@ -300,8 +303,22 @@
         [self confirmRespring];
     } else if ([act isEqualToString:@"clear"]) {
         [TBPrefs setString:nil forKey:TBKeyActiveTheme];
-        [TBPrefs notifyChanged];
-        [self alert:@"已清除" msg:@"当前不再使用任何主题"];
+        NSUInteger generation = ++self.applyFeedbackGeneration;
+        [TBToast dismissNow];
+        __weak TBSettingsController *weakSelf = self;
+        [TBPrefs notifyChangedWithCompletion:^(BOOL confirmed) {
+            TBSettingsController *owner = weakSelf;
+            if (!owner || owner.applyFeedbackGeneration != generation || !owner.isViewLoaded ||
+                !owner.view.window || owner.presentedViewController || owner.isBeingDismissed ||
+                owner.isMovingFromParentViewController ||
+                (owner.navigationController && owner.navigationController.topViewController != owner) ||
+                [UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+            for (UIView *view = owner.view; view; view = view.superview) {
+                if (view.hidden || view.alpha < 0.01) return;
+            }
+            if (confirmed) [TBToast show:@"已清除" icon:@"checkmark" in:owner];
+            else [TBToast show:@"设置已保存，尚未收到应用完成确认" icon:@"clock" in:owner];
+        }];
     }
 }
 
