@@ -1645,22 +1645,22 @@ static void TBPSClearCellState(id cell) {
     objc_setAssociatedObject(cell,kTBPSStateKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 static NSString *TBPSCellBundleID(id cell) {
-    id spec=nil;
-    @try {
-        SEL selector=NSSelectorFromString(@"specifier");
-        if ([cell respondsToSelector:selector]) spec=((id(*)(id,SEL))objc_msgSend)(cell,selector);
-        if (!spec) spec=[cell valueForKey:@"_specifier"];
-    } @catch (NSException *exception) {}
-    NSString *bid=TBBidFromAnySpecifier(spec);
-    if (bid.length) return bid;
-    @try {
-        SEL selector=NSSelectorFromString(@"getLazyIconID");
-        if ([cell respondsToSelector:selector]) {
-            id value=((id(*)(id,SEL))objc_msgSend)(cell,selector);
-            if ([value isKindOfClass:[NSString class]] && [(NSString *)value containsString:@"."]) return value;
-        }
-    } @catch (NSException *exception) {}
-    return nil;
+    // A permission row's specifier identifies its owner, not its glyph.
+    // Only an actual active lazy App-icon source may enter this path.
+    Ivar activeIvar=class_getInstanceVariable([cell class], "_lazyIcon");
+    Ivar appIvar=class_getInstanceVariable([cell class], "_lazyIconAppID");
+    if (!activeIvar || !appIvar) return nil;
+    const char *activeType=ivar_getTypeEncoding(activeIvar);
+    const char *appType=ivar_getTypeEncoding(appIvar);
+    ptrdiff_t activeOffset=ivar_getOffset(activeIvar);
+    if (!activeType || (activeType[0]!='B' && activeType[0]!='c') ||
+        !appType || appType[0]!='@' || activeOffset<0 ||
+        (size_t)activeOffset>=class_getInstanceSize([cell class])) return nil;
+    unsigned char active=0;
+    memcpy(&active,((const unsigned char *)(__bridge const void *)cell)+activeOffset,sizeof(active));
+    if (!active) return nil;
+    id value=object_getIvar(cell,appIvar);
+    return [value isKindOfClass:[NSString class]] && [(NSString *)value containsString:@"."] ? value : nil;
 }
 
 static UIImage *TBPSThemedImage(id cell,UIImage *candidate) {
@@ -3680,10 +3680,138 @@ static NSString *TBDynamicResourcePath(NSString *bid) {
     return nil;
 }
 
+// Settings root uses IconServices SwiftUI rather than PSTableCell for App rows.
+// Keep all additional work confined to Preferences and actual application icons.
+typedef id (*TBSettingsISSizeFn)(id, SEL, CGSize, double);
+typedef void (*TBSettingsISAsyncFn)(id, SEL, id, id);
+static IMP o_settingsISSize, o_settingsISAsync;
+
+static NSString *TBSettingsISBundleID(id icon) {
+    NSString *direct=TBBIDFromISIcon(icon);
+    if (TBBIDLooksUsable(direct)) return direct;
+    id identity=nil;
+    @try { identity=[icon valueForKey:@"_identity"]; } @catch (NSException *exception) {}
+    for (NSString *key in @[@"bundleIdentifier",@"applicationBundleIdentifier",@"resourceIdentifier"]) {
+        @try {
+            id value=[identity valueForKey:key];
+            if ([value isKindOfClass:[NSString class]] && TBBIDLooksUsable(value)) return value;
+        } @catch (NSException *exception) {}
+    }
+    return nil;
+}
+
+static UIImage *TBSettingsISImage(NSString *bid, CGSize size, double scale) {
+    TB_RENDER_SCOPE();
+    if (gTBSettingsNativeIcon || !TBEnabled() || TBSafeMode() ||
+        ![bid isKindOfClass:[NSString class]] || ![bid containsString:@"."]) return nil;
+    if (!isfinite(size.width) || !isfinite(size.height) ||
+        size.width < 1 || size.height < 1 || size.width > 512 || size.height > 512 ||
+        !isfinite(scale) || scale < 1 || scale > 4) return nil;
+    // App-image identity comes from ISIcon itself, never a preference owner ID.
+    UIImage *image = TBImageForBundle(bid);
+    // Calendar's desktop provider stays untouched; Settings requests its static App icon.
+    if (!image && [bid isEqualToString:@"com.apple.mobilecal"]) {
+        [gLock lock];
+        TBLoadIndex();
+        NSString *path = gIndex[bid];
+        [gLock unlock];
+        if (path.length) image = TBIconFinalImage([[UIImage alloc] initWithContentsOfFile:path]);
+    }
+    if (!image) return nil;
+    TBInfo info = { size, scale, 0 };
+    return TBFitImage(image, info);
+}
+
+static id TBSettingsISObjectImage(id icon, id original) {
+    if (![original isKindOfClass:[UIImage class]]) return original;
+    UIImage *native = original;
+    UIImage *image = TBSettingsISImage(TBSettingsISBundleID(icon), native.size, native.scale);
+    return image ?: original;
+}
+
+static id tb_settingsISSize(id self, SEL selector, CGSize size, double scale) {
+    id native = o_settingsISSize ? ((TBSettingsISSizeFn)o_settingsISSize)(self, selector, size, scale) : nil;
+    // Preserve the system's returned object type; unknown wrappers pass through.
+    if (![native isKindOfClass:[UIImage class]]) return native;
+    UIImage *image = TBSettingsISImage(TBSettingsISBundleID(self), ((UIImage *)native).size,
+                                      ((UIImage *)native).scale);
+    return image ?: native;
+}
+
+struct TBSettingsBlockHeader {
+    void *isa;
+    int flags;
+    int reserved;
+    void *invoke;
+    const unsigned long *descriptor;
+};
+static BOOL TBSettingsCGCompletionMatches(id block) {
+    if (!block) return NO;
+    const struct TBSettingsBlockHeader *header = (__bridge const void *)block;
+    if (!(header->flags & (1 << 30)) || !header->descriptor) return NO;
+    const unsigned char *entry = (const unsigned char *)header->descriptor + 2 * sizeof(unsigned long);
+    if (header->flags & (1 << 25)) entry += 2 * sizeof(void *);
+    const char *types = *(const char * const *)entry;
+    if (!types) return NO;
+    @try {
+        NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:types];
+        if (!signature || signature.numberOfArguments != 2 ||
+            *TBPSUnqualifiedType(signature.methodReturnType) != 'v') return NO;
+        const char *argument = TBPSUnqualifiedType([signature getArgumentTypeAtIndex:1]);
+        return strcmp(argument, @encode(CGImageRef)) == 0;
+    } @catch (NSException *exception) { return NO; }
+}
+
+static void tb_settingsISAsync(id self, SEL selector, id descriptor, id completion) {
+    if (!o_settingsISAsync) return;
+    TBSettingsISAsyncFn native = (TBSettingsISAsyncFn)o_settingsISAsync;
+    if (gTBSettingsNativeIcon || !TBSettingsCGCompletionMatches(completion)) {
+        native(self, selector, descriptor, completion);
+        return;
+    }
+    NSString *bid = TBSettingsISBundleID(self);
+    if (![bid isKindOfClass:[NSString class]] || ![bid containsString:@"."]) {
+        native(self, selector, descriptor, completion);
+        return;
+    }
+    // Keep native delivery timing, queue and single completion. The block ABI is
+    // checked above; unfamiliar signatures are never wrapped or guessed.
+    void (^callback)(CGImageRef) = completion;
+    native(self, selector, descriptor, ^(CGImageRef original) {
+        UIImage *replacement = nil;
+        @try {
+            if (original) {
+                double scale = [UIScreen mainScreen].scale;
+                @try {
+                    id value = [descriptor valueForKey:@"sanitizedScale"];
+                    if ([value respondsToSelector:@selector(doubleValue)]) scale = [value doubleValue];
+                } @catch (NSException *exception) {}
+                if (isfinite(scale) && scale >= 1 && scale <= 4) {
+                    CGSize size = CGSizeMake(CGImageGetWidth(original) / scale,
+                                             CGImageGetHeight(original) / scale);
+                    replacement = TBSettingsISImage(bid, size, scale);
+                }
+            }
+        } @catch (NSException *exception) { replacement = nil; }
+        callback(replacement.CGImage ?: original);
+    });
+}
+
+static BOOL TBSettingsISSizeMatches(Class cls) {
+    Method method = class_getInstanceMethod(cls, NSSelectorFromString(@"imageForSize:scale:"));
+    if (!TBPSMethodMatches(method, "@@:{d")) return NO;
+    char *type = method_copyArgumentType(method, 2);
+    BOOL matches = type && strcmp(TBPSUnqualifiedType(type), @encode(CGSize)) == 0;
+    free(type);
+    return matches;
+}
+
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
     TB_RENDER_SCOPE();
     id ret = o_isiconImg ? o_isiconImg(self, _cmd, descriptor) : nil;
     if (!TBEnabled() || TBSafeMode()) return ret;
+    if ([TBProcName() isEqualToString:@"Preferences"])
+        return TBSettingsISObjectImage(self, ret);
 
     NSString *bid = TBBIDFromISIcon(self);
     if (!TBIsDynamicBID(bid)) return ret;
@@ -3711,6 +3839,8 @@ static id tb_isicon_image2(id self, SEL _cmd, id descriptor) {
     TB_RENDER_SCOPE();
     id ret = o_isiconImg2 ? o_isiconImg2(self, _cmd, descriptor) : nil;
     if (!TBEnabled() || TBSafeMode()) return ret;
+    if ([TBProcName() isEqualToString:@"Preferences"])
+        return TBSettingsISObjectImage(self, ret);
 
     NSString *bid = TBBIDFromISIcon(self);
     if (!TBIsDynamicBID(bid)) return ret;
@@ -5070,6 +5200,14 @@ static void TBInstall(void) {
         if (TBHasMethod(isicon, @"imageForDescriptor:")) {
             o_isiconImg2 = (ISIconImgFn)TBHook(isicon, @"imageForDescriptor:", (IMP)tb_isicon_image2, "ISIcon 图像 2");
         }
+    }
+
+    if ([TBProcName() isEqualToString:@"Preferences"]) {
+        TBPSInstallMethod(isicon,NSSelectorFromString(@"getCGImageForImageDescriptor:completion:"),
+                          (IMP)tb_settingsISAsync,&o_settingsISAsync,"v@:@@");
+        if (TBSettingsISSizeMatches(isicon))
+            TBPSInstallMethod(isicon,NSSelectorFromString(@"imageForSize:scale:"),
+                              (IMP)tb_settingsISSize,&o_settingsISSize,"@@:{d");
     }
 
     // 桌面时钟图标（运行时检测）
