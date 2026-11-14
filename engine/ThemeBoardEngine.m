@@ -69,6 +69,7 @@ static BOOL TBHasMethod(Class cls, NSString *selName) {
 static BOOL TBUIKitIconEnabled(void);
 static id TBPref(NSString *key);  // 文件日志开关在 TBLog 前使用
 static NSString *TBBIDFromISIcon(id icon);
+static NSString *TBSettingsISBundleID(id icon);
 static NSString *TBProcName(void) {
     static NSString *name = nil;
     if (!name) name = [[NSProcessInfo processInfo] processName] ?: @"?";
@@ -3563,6 +3564,7 @@ static ISIconCGFn o_isiconCG, o_isiconCG2;
 
 static NSString *TBBIDFromISIcon(id icon) {
     if (!icon) return nil;
+    if ([TBProcName() isEqualToString:@"Preferences"]) return TBSettingsISBundleID(icon);
     for (NSString *k in @[@"bundleIdentifier", @"applicationBundleIdentifier"]) {
         @try {
             id v = [icon valueForKey:k];
@@ -3686,20 +3688,26 @@ typedef id (*TBSettingsISSizeFn)(id, SEL, CGSize, double);
 typedef void (*TBSettingsISAsyncFn)(id, SEL, id, id);
 static IMP o_settingsISSize, o_settingsISAsync;
 
+// On iOS 17.2.1 ISIcon(Experimental)._identity prepares and fetches an image.
+// Calling it from an image hook recurses through ISConcreteIcon until stack overflow.
+// Use only an explicit, ABI-checked App-ID getter; never KVC/identity/resource here.
+static __thread BOOL gTBSettingsResolvingBID;
 static NSString *TBSettingsISBundleID(id icon) {
-    if (!icon) return nil;
-    id identity=nil, resource=nil;
-    @try { identity=[icon valueForKey:@"_identity"]; } @catch (NSException *exception) {}
-    @try { resource=[identity valueForKey:@"resource"]; } @catch (NSException *exception) {}
-    for (id source in @[icon, identity ?: [NSNull null], resource ?: [NSNull null]]) {
-        for (NSString *key in @[@"bundleIdentifier",@"applicationBundleIdentifier"]) {
+    if (!icon || gTBSettingsNativeIcon || gTBSettingsResolvingBID) return nil;
+    BOOL previous=gTBSettingsResolvingBID;
+    gTBSettingsResolvingBID=YES;
+    @try {
+        for (const char **name=(const char *[]){"bundleIdentifier","applicationBundleIdentifier",NULL};*name;name++) {
+            SEL selector=sel_registerName(*name);
+            Method getter=class_getInstanceMethod(object_getClass(icon),selector);
+            if (!TBPSMethodMatches(getter,"@@:")) continue;
             @try {
-                id value=[source valueForKey:key];
+                id value=((id(*)(id,SEL))method_getImplementation(getter))(icon,selector);
                 if (TBBIDLooksUsable(value) && ![value hasPrefix:@"com.apple.graphic-icon."])
                     return [value copy];
             } @catch (NSException *exception) {}
         }
-    }
+    } @finally { gTBSettingsResolvingBID=previous; }
     return nil;
 }
 
