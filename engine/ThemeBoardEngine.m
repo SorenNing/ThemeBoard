@@ -3687,15 +3687,18 @@ typedef void (*TBSettingsISAsyncFn)(id, SEL, id, id);
 static IMP o_settingsISSize, o_settingsISAsync;
 
 static NSString *TBSettingsISBundleID(id icon) {
-    NSString *direct=TBBIDFromISIcon(icon);
-    if (TBBIDLooksUsable(direct)) return direct;
-    id identity=nil;
+    if (!icon) return nil;
+    id identity=nil, resource=nil;
     @try { identity=[icon valueForKey:@"_identity"]; } @catch (NSException *exception) {}
-    for (NSString *key in @[@"bundleIdentifier",@"applicationBundleIdentifier",@"resourceIdentifier"]) {
-        @try {
-            id value=[identity valueForKey:key];
-            if ([value isKindOfClass:[NSString class]] && TBBIDLooksUsable(value)) return value;
-        } @catch (NSException *exception) {}
+    @try { resource=[identity valueForKey:@"resource"]; } @catch (NSException *exception) {}
+    for (id source in @[icon, identity ?: [NSNull null], resource ?: [NSNull null]]) {
+        for (NSString *key in @[@"bundleIdentifier",@"applicationBundleIdentifier"]) {
+            @try {
+                id value=[source valueForKey:key];
+                if (TBBIDLooksUsable(value) && ![value hasPrefix:@"com.apple.graphic-icon."])
+                    return [value copy];
+            } @catch (NSException *exception) {}
+        }
     }
     return nil;
 }
@@ -3722,20 +3725,15 @@ static UIImage *TBSettingsISImage(NSString *bid, CGSize size, double scale) {
     return TBFitImage(image, info);
 }
 
+static id TBSettingsConcreteImage(NSString *bid, id original);
 static id TBSettingsISObjectImage(id icon, id original) {
-    if (![original isKindOfClass:[UIImage class]]) return original;
-    UIImage *native = original;
-    UIImage *image = TBSettingsISImage(TBSettingsISBundleID(icon), native.size, native.scale);
-    return image ?: original;
+    return TBSettingsConcreteImage(TBSettingsISBundleID(icon),original);
 }
 
 static id tb_settingsISSize(id self, SEL selector, CGSize size, double scale) {
     id native = o_settingsISSize ? ((TBSettingsISSizeFn)o_settingsISSize)(self, selector, size, scale) : nil;
-    // Preserve the system's returned object type; unknown wrappers pass through.
-    if (![native isKindOfClass:[UIImage class]]) return native;
-    UIImage *image = TBSettingsISImage(TBSettingsISBundleID(self), ((UIImage *)native).size,
-                                      ((UIImage *)native).scale);
-    return image ?: native;
+    // Preserve UIImage or IFImage return contracts; unknown wrappers pass through.
+    return TBSettingsConcreteImage(TBSettingsISBundleID(self),native);
 }
 
 struct TBSettingsBlockHeader {
@@ -3804,6 +3802,142 @@ static BOOL TBSettingsISSizeMatches(Class cls) {
     BOOL matches = type && strcmp(TBPSUnqualifiedType(type), @encode(CGSize)) == 0;
     free(type);
     return matches;
+}
+
+// ISIcon is a class cluster: concrete App icons override the base methods and
+// return IFImage, not UIImage. Keep the fix in Preferences and at the source.
+static IMP o_settingsConcreteImage, o_settingsConcreteAsync;
+static const void *kTBSettingsIFReplacement = &kTBSettingsIFReplacement;
+typedef id (*TBSettingsIFInitFn)(__attribute__((ns_consumed)) id, SEL,
+    CGImageRef, double, CGSize, BOOL, CGSize) __attribute__((ns_returns_retained));
+
+static Method TBSettingsIFMethod(Class cls, const char *name, const char *types) {
+    Method method = cls ? class_getInstanceMethod(cls, sel_registerName(name)) : NULL;
+    const char *actual = method ? method_getTypeEncoding(method) : NULL;
+    return actual && strcmp(actual, types) == 0 ? method : NULL;
+}
+
+static BOOL TBSettingsIFGeometryValid(double scale, CGSize size, CGSize minimum, CGSize pixels) {
+    return isfinite(scale) && scale >= 1 && scale <= 4 &&
+        isfinite(size.width) && isfinite(size.height) && size.width >= 1 && size.height >= 1 &&
+        size.width <= 512 && size.height <= 512 &&
+        isfinite(minimum.width) && isfinite(minimum.height) && minimum.width >= 0 && minimum.height >= 0 &&
+        minimum.width <= size.width && minimum.height <= size.height &&
+        isfinite(pixels.width) && isfinite(pixels.height) &&
+        fabs(size.width*scale-pixels.width) <= 0.001 &&
+        fabs(size.height*scale-pixels.height) <= 0.001;
+}
+static id TBSettingsIFImage(NSString *bid, id original) {
+    if (!original || gTBSettingsNativeIcon || !TBEnabled() || TBSafeMode()) return original;
+    Class imageClass = NSClassFromString(@"IFImage"), cacheClass = NSClassFromString(@"IFCacheImage");
+    if (!imageClass || !cacheClass || ![cacheClass isSubclassOfClass:imageClass] ||
+        ![original isKindOfClass:imageClass] ||
+        objc_getAssociatedObject(original, kTBSettingsIFReplacement)) return original;
+    Class cls = object_getClass(original);
+    Method cg = TBSettingsIFMethod(cls,"cgImage","^{CGImage=}16@0:8");
+    Method scaleMethod = TBSettingsIFMethod(cls,"scale","d16@0:8");
+    Method pixelMethod = TBSettingsIFMethod(cls,"pixelSize","{CGSize=dd}16@0:8");
+    Method minimumMethod = TBSettingsIFMethod(cls,"minimumSize","{CGSize=dd}16@0:8");
+    Method iconMethod = TBSettingsIFMethod(cls,"iconSize","{CGSize=dd}16@0:8");
+    Method placeholderMethod = TBSettingsIFMethod(cls,"placeholder","B16@0:8");
+    Method largestMethod = TBSettingsIFMethod(cls,"largest","B16@0:8");
+    Method largestSetter = TBSettingsIFMethod(cacheClass,"setLargest:","v20@0:8B16");
+    Method initializer = TBSettingsIFMethod(cacheClass,
+        "initWithCGImage:scale:minimumSize:placeholder:iconSize:",
+        "@68@0:8^{CGImage=}16d24{CGSize=dd}32B48{CGSize=dd}52");
+    if (!cg || !scaleMethod || !pixelMethod || !minimumMethod || !iconMethod ||
+        !placeholderMethod || !largestMethod || !largestSetter || !initializer) return original;
+    BOOL placeholder = ((BOOL(*)(id,SEL))method_getImplementation(placeholderMethod))(
+        original,method_getName(placeholderMethod));
+    if (placeholder) return original;
+    double scale = ((double(*)(id,SEL))method_getImplementation(scaleMethod))(original,method_getName(scaleMethod));
+    CGSize pixels = ((CGSize(*)(id,SEL))method_getImplementation(pixelMethod))(original,method_getName(pixelMethod));
+    CGSize minimum = ((CGSize(*)(id,SEL))method_getImplementation(minimumMethod))(original,method_getName(minimumMethod));
+    CGSize size = ((CGSize(*)(id,SEL))method_getImplementation(iconMethod))(original,method_getName(iconMethod));
+    BOOL largest = ((BOOL(*)(id,SEL))method_getImplementation(largestMethod))(original,method_getName(largestMethod));
+    if (!TBSettingsIFGeometryValid(scale,size,minimum,pixels)) return original;
+    CGImageRef native = ((CGImageRef(*)(id,SEL))method_getImplementation(cg))(original,method_getName(cg));
+    if (!native || CGImageGetWidth(native) != pixels.width || CGImageGetHeight(native) != pixels.height) return original;
+    UIImage *themed = TBSettingsISImage(bid,size,scale);
+    if (!themed.CGImage || CGImageGetWidth(themed.CGImage) != pixels.width ||
+        CGImageGetHeight(themed.CGImage) != pixels.height) return original;
+    id result = ((TBSettingsIFInitFn)method_getImplementation(initializer))(
+        [cacheClass alloc],method_getName(initializer),themed.CGImage,scale,minimum,NO,size);
+    if (!result) return original;
+    ((void(*)(id,SEL,BOOL))method_getImplementation(largestSetter))(result,method_getName(largestSetter),largest);
+    objc_setAssociatedObject(result,kTBSettingsIFReplacement,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return result;
+}
+
+static id TBSettingsConcreteImage(NSString *bid, id original) {
+    TB_RENDER_SCOPE();
+    @try {
+        if (!TBBIDLooksUsable(bid) || [bid hasPrefix:@"com.apple.graphic-icon."]) return original;
+        if ([original isKindOfClass:[UIImage class]]) {
+            UIImage *native = original;
+            return TBSettingsISImage(bid,native.size,native.scale) ?: original;
+        }
+        return TBSettingsIFImage(bid,original);
+    } @catch (NSException *exception) { return original; }
+}
+
+// Only inspect compiler-created blocks, and preserve unfamiliar callback ABIs.
+static BOOL TBSettingsIsBlock(id block) {
+    static Class root;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (Class cls=object_getClass(^{ });cls;cls=class_getSuperclass(cls))
+            if (class_getSuperclass(cls)==[NSObject class]) { root=cls; break; }
+    });
+    if (!root) return NO;
+    for (Class cls=object_getClass(block);cls;cls=class_getSuperclass(cls))
+        if (cls==root) return YES;
+    return NO;
+}
+static BOOL TBSettingsIsObjectType(const char *type) {
+    type=TBPSUnqualifiedType(type);
+    return type[0]=='@' && (type[1]=='\0' || type[1]=='"');
+}
+static unsigned int TBSettingsObjectCompletionShape(id block) {
+    if (!TBSettingsIsBlock(block)) return 0;
+    const struct TBSettingsBlockHeader *header=(__bridge const void *)block;
+    if (!(header->flags & (1<<30)) || (header->flags & (1<<29)) || !header->descriptor) return 0;
+    const unsigned char *entry=(const unsigned char *)header->descriptor+2*sizeof(unsigned long);
+    if (header->flags & (1<<25)) entry+=2*sizeof(void *);
+    const char *types=NULL; memcpy(&types,entry,sizeof(types));
+    if (!types || strnlen(types,256)==256) return 0;
+    @try {
+        NSMethodSignature *signature=[NSMethodSignature signatureWithObjCTypes:types];
+        NSUInteger count=signature.numberOfArguments;
+        if (!signature || *TBPSUnqualifiedType(signature.methodReturnType)!='v' ||
+            (count!=2 && count!=3) || strcmp([signature getArgumentTypeAtIndex:0],"@?") ||
+            !TBSettingsIsObjectType([signature getArgumentTypeAtIndex:1]) ||
+            (count==3 && !TBSettingsIsObjectType([signature getArgumentTypeAtIndex:2]))) return 0;
+        return (unsigned int)count-1;
+    } @catch (NSException *exception) { return 0; }
+}
+
+static id tb_settingsConcreteImage(id self, SEL selector, id descriptor) {
+    id original=o_settingsConcreteImage ? ((id(*)(id,SEL,id))o_settingsConcreteImage)(self,selector,descriptor) : nil;
+    return TBSettingsConcreteImage(TBSettingsISBundleID(self),original);
+}
+static void tb_settingsConcreteAsync(id self, SEL selector, id descriptor, id completion) {
+    if (!o_settingsConcreteAsync) return;
+    TBSettingsISAsyncFn native=(TBSettingsISAsyncFn)o_settingsConcreteAsync;
+    NSString *bid=TBSettingsISBundleID(self);
+    unsigned int shape=TBSettingsObjectCompletionShape(completion);
+    if (gTBSettingsNativeIcon || !TBBIDLooksUsable(bid) || !shape) {
+        native(self,selector,descriptor,completion); return;
+    }
+    if (shape==1) {
+        void (^callback)(id)=[completion copy];
+        native(self,selector,descriptor,^(id image) { callback(TBSettingsConcreteImage(bid,image)); });
+    } else {
+        void (^callback)(id,id)=[completion copy];
+        native(self,selector,descriptor,^(id image,id error) {
+            callback(error ? image : TBSettingsConcreteImage(bid,image),error);
+        });
+    }
 }
 
 static id tb_isicon_image(id self, SEL _cmd, id descriptor) {
@@ -5203,6 +5337,13 @@ static void TBInstall(void) {
     }
 
     if ([TBProcName() isEqualToString:@"Preferences"]) {
+        // The class-cluster implementation must be hooked separately from ISIcon.
+        // Per-method original slots make the existing finite retries idempotent.
+        Class concrete=NSClassFromString(@"ISConcreteIcon");
+        TBPSInstallMethod(concrete,NSSelectorFromString(@"imageForDescriptor:"),
+                          (IMP)tb_settingsConcreteImage,&o_settingsConcreteImage,"@@:@");
+        TBPSInstallMethod(concrete,NSSelectorFromString(@"getImageForImageDescriptor:completion:"),
+                          (IMP)tb_settingsConcreteAsync,&o_settingsConcreteAsync,"v@:@@");
         TBPSInstallMethod(isicon,NSSelectorFromString(@"getCGImageForImageDescriptor:completion:"),
                           (IMP)tb_settingsISAsync,&o_settingsISAsync,"v@:@@");
         if (TBSettingsISSizeMatches(isicon))
