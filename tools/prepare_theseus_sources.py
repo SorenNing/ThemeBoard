@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Stage Theseus with explicit, audited iOS presentation fixes.
+"""Stage pinned Theseus; adapt only user-requested tab geometry.
 
-Vendor files are untouched. Patch the disposable build copy and record hashes;
-never silently substitute different shaders, physics or control implementations.
+The renderer, shader, capture, material and control physics remain upstream bytes.
+No legacy app renderer, padded-host rewrite or capture substitute is retained.
 """
 import argparse
 import hashlib
@@ -39,84 +39,33 @@ def prepare(root, output):
             target.write_bytes(source.read_bytes())
     changes = {}
 
-    path = output / 'Core/TheseusView.swift'
+    path = output / 'Components/TheseusTabBar.swift'
     original = path.read_text()
     text = replace_once(original,
-        '        return (metalLayerView?.frame ?? bounds).insetBy(dx: -padding.x, dy: -padding.y)',
-        '        return bounds.insetBy(dx: -padding.x, dy: -padding.y)', 'snapshot extent')
+        '    private var pillSize: CGSize {\n        usesIOS26Look ? Self.iOS26PillSize : Self.pillSize\n    }',
+        '    private var pillSize: CGSize {\n'
+        '        // ThemeBoard: 3 closer tabs in a 312pt dock; keep original\n'
+        '        // spring/morph and enlarge the selected capsule, not the icons.\n'
+        '        let native = usesIOS26Look ? Self.iOS26PillSize : Self.pillSize\n'
+        '        let available = contentBarFrame.width / max(CGFloat(items.count), 1)\n'
+        '        return CGSize(width: min(96, max(native.width, available - 8)), height: native.height)\n'
+        '    }', 'larger selection capsule')
     text = replace_once(text,
-        '        metalContainer.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n        metalContainer.frame = bounds',
-        '        // ThemeBoard: explicitly size the Metal host to its padded drawable.\n'
-        '        // Do not rely on CAMetalLayer interpreting contentsGravity.center.\n'
-        '        metalContainer.isOpaque = false\n'
-        '        metalContainer.backgroundColor = .clear\n'
-        '        metalContainer.isUserInteractionEnabled = false\n'
-        '        metalContainer.autoresizingMask = []\n'
-        '        metalContainer.frame = bounds', 'transparent Metal host')
-    text = replace_once(text, '        metalLayer.contentsGravity = .center',
-        '        metalLayer.contentsGravity = .resize', 'one-to-one drawable')
+        '        usesIOS26Look ? 10.25 : 15',
+        '        0 // ThemeBoard: equal slots; a 96pt pill leaves 4pt end margins in 312pt.',
+        'equal slot end spacing')
     text = replace_once(text,
-        '        let paddingY = padding.y * scale\n        let drawableSize = CGSize(',
-        '        let paddingY = padding.y * scale\n'
-        '        let presentationFrame = bounds.insetBy(dx: -padding.x, dy: -padding.y)\n'
-        '        if metalLayerView?.frame != presentationFrame {\n'
-        '            metalLayerView?.frame = presentationFrame\n'
-        '            renderer?.setNeedsRender()\n'
-        '        }\n'
-        '        let drawableSize = CGSize(', 'padded presentation extent')
+        '        let size = usesIOS26Look ? Self.iOS26LensSize : Self.lensSize\n        return CGRect(x: itemFrame.midX - size.width / 2, y: itemFrame.midY - size.height / 2, width: size.width, height: size.height)',
+        '        let native = usesIOS26Look ? Self.iOS26LensSize : Self.lensSize\n'
+        '        let size = CGSize(width: pillSize.width + 16, height: native.height)\n'
+        '        return CGRect(x: itemFrame.midX - size.width / 2, y: itemFrame.midY - size.height / 2, width: size.width, height: size.height)',
+        'lens matches enlarged resting pill')
     path.write_text(text)
     changes[str(path.relative_to(output))] = {'before': hashlib.sha256(original.encode()).hexdigest(), 'after': hashlib.sha256(text.encode()).hexdigest()}
-
-    path = output / 'Rendering/TheseusRenderer.swift'
-    original = path.read_text()
-    text = replace_once(original, '        let viewFrame = metalLayer.frame\n        let captureRegion = calculateCaptureRegion(viewFrame: viewFrame, in: sourceView)',
-        '        // ThemeBoard: the Metal layer is now the padded presentation.\n'
-        '        // Capture starts at the glass body, adding its padding exactly once.\n'
-        '        // metalLayer.superlayer is the glass view.layer; use its\n'
-        '        // unpadded body bounds, then expand once in captureRegion.\n'
-        '        let viewFrame = hostView?.bounds ?? metalLayer.frame\n'
-        '        let captureRegion = calculateCaptureRegion(viewFrame: viewFrame, in: sourceView)', 'capture body extent')
-    path.write_text(text)
-    changes[str(path.relative_to(output))] = {'before': hashlib.sha256(original.encode()).hexdigest(), 'after': hashlib.sha256(text.encode()).hexdigest()}
-
-    path = output / 'Rendering/CaptureCompensation.swift'
-    original = path.read_text()
-    text = replace_once(original,
-        '            } else {\n                glass.backgroundColor = glass.captureVeilColor\n            }',
-        '            } else {\n'
-        '                // ThemeBoard: a no-snapshot stand-in must use the glass\n'
-        '                // contour. A UIView background paints a rectangular plate.\n'
-        '                let shape = glass.configuration.shape\n'
-        '                let frame = glass.bounds.insetBy(dx: shape.widthInset, dy: shape.heightInset)\n'
-        '                let veil = CALayer()\n'
-        '                veil.actions = ["bounds": NSNull(), "position": NSNull(), "backgroundColor": NSNull()]\n'
-        '                veil.frame = frame\n'
-        '                veil.backgroundColor = glass.captureVeilColor.cgColor\n'
-        '                veil.cornerRadius = min(abs(shape.cornerRadius), min(frame.width, frame.height) / 2)\n'
-        '                veil.cornerCurve = .continuous\n'
-        '                veil.masksToBounds = true\n'
-        '                glass.layer.insertSublayer(veil, at: 0)\n'
-        '                entry.snapshotLayer = veil\n'
-        '            }', 'rounded no-snapshot stand-in')
-    path.write_text(text)
-    changes[str(path.relative_to(output))] = {'before': hashlib.sha256(original.encode()).hexdigest(), 'after': hashlib.sha256(text.encode()).hexdigest()}
-    for relative in ['Rendering/BackgroundCaptureDraw.swift', 'Rendering/ViewLayerCapture.swift']:
-        path = output / relative
-        original = path.read_text()
-        anchor = ('        let hiddenStates = excludedViews.map { $0.isHidden }' if 'BackgroundCaptureDraw' in relative
-                  else '        let previousVisibility = excludedViews.map { $0.isHidden }')
-        text = replace_once(original, anchor,
-            '        // ThemeBoard: temporary capture substitutions must never animate\n'
-            '        // or commit a rectangular veil into the live presentation tree.\n'
-            '        CATransaction.begin()\n'
-            '        CATransaction.setDisableActions(true)\n'
-            '        defer { CATransaction.commit() }\n' + anchor,
-            relative + ' capture transaction')
-        path.write_text(text)
-        changes[relative] = {'before': hashlib.sha256(original.encode()).hexdigest(), 'after': hashlib.sha256(text.encode()).hexdigest()}
 
     record = {'upstream_commit': provenance['commit'], 'vendor_modified': False,
-              'patches': changes, 'shaders_modified': False, 'native_ui_validated': False}
+              'patches': changes, 'shaders_modified': False, 'renderer_modified': False,
+              'capture_modified': False, 'materials_modified': False, 'native_ui_validated': False}
     (output.parent / 'theseus-compatibility.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
 

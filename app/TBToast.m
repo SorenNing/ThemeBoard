@@ -6,9 +6,6 @@ static const CGFloat kTBToastHeight     = 48.0;
 static const CGFloat kTBToastPadX       = 22.0;
 static const CGFloat kTBToastIconSize   = 14.0;
 static const CGFloat kTBToastIconGap    = 7.0;
-static const CGFloat kTBToastDockH      = 64.0;   // 与 TBRootController 的 dock 一致
-static const CGFloat kTBToastDockBottom = 34.0;   // 与 TBRootController 的 dock 下边距一致
-static const CGFloat kTBToastDockGap    = 44.0;   // 0.15.91：16→44，远离底部手势区（原来贴着底栏会干扰上滑返回/退出）
 
 static const NSTimeInterval kTBToastInDuration  = 0.32;
 static const CGFloat        kTBToastInDamping   = 0.78;

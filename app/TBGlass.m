@@ -10,8 +10,7 @@
     [super layoutSubviews];
     self.surface.frame = self.bounds;
     self.opaque = NO;
-    // The scroll viewport clips the page. Individual cells must not cut the
-    // glass's rounded rim/shadow into a rectangular row-sized strip.
+    // Keep each card rim uncut. The full-page scroll view owns page clipping.
     for (UIView *ancestor = self.superview; ancestor; ancestor = ancestor.superview) {
         if ([ancestor isKindOfClass:[UIScrollView class]]) break;
         ancestor.clipsToBounds = NO;
@@ -57,16 +56,6 @@ UIColor *TBDynamicColor(UIColor *light, UIColor *dark) {
 }
 
 
-static UIColor *TBPageBaseColor(void) {
-    return [UIColor systemGroupedBackgroundColor];
-}
-
-void TBApplyRim(UIView *view, CGFloat alpha) {
-    // Compatibility for any remaining caller: rim is rendered by Theseus.
-    (void)alpha;
-    TBApplyTheseusSurface(view, view.layer.cornerRadius, nil);
-}
-
 UIView *TBGlassCard(CGFloat radius) {
     TBGlassCardView *card = [[TBGlassCardView alloc] init];
     TBApplyTheseusSurface(card, radius, nil);
@@ -98,35 +87,9 @@ UIBarButtonItem *TBGlassNavigationItem(NSString *title, UIImage *image, id targe
     return [[UIBarButtonItem alloc] initWithCustomView:button];
 }
 
-void TBApplyPageBackground(UIView *host) {
-    if (!host) return;
-    host.backgroundColor = TBPageBaseColor();
-}
-
-void TBSetPageBackground(UIViewController *vc) {
-    if (!vc) return;
-    vc.view.backgroundColor = TBPageBaseColor();
-    if ([vc isKindOfClass:[UITableViewController class]]) {
-        ((UITableViewController *)vc).tableView.backgroundColor = [UIColor clearColor];
-    }
-}
-
-void TBAttachFrostContainer(UIView *host) {
-    if (!host) return;
-    host.backgroundColor = TBPageBaseColor();
-}
-
-void TBAttachWindowFrost(UIWindow *window) {
-    if (!window) return;
-    window.backgroundColor = TBPageBaseColor();
-}
-
-void TBAttachFrost(UIView *host) {
-    host.backgroundColor = [UIColor systemGroupedBackgroundColor];
-}
-
 UIView *TBGlassCellBG(CGFloat inset) {
     UIView *bg = [[UIView alloc] init];
+    bg.opaque = NO;
     bg.backgroundColor = [UIColor clearColor];
     UIView *card = TBGlassCard(20);
     card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -140,51 +103,34 @@ UIView *TBGlassCellBG(CGFloat inset) {
     return bg;
 }
 
-// ── 按页面边距对齐的表格玻璃卡 ─────────────────────────────────────────────
-// .insetGrouped 的左右 section inset 不是固定值：不同屏幕宽度/系统上实测有 20 和 24
-// 两种。0.15.59 写死 "16 - 20 = -4" 时，在 24pt inset 的机器上卡片落在 24-4=20，
-// 比目标 16 多 4pt（这就是「部分页面卡片边距不对」的来源）。
-// 这里改成运行时把 cell 换算到 UITableView 坐标系，再反推卡片需要的外扩量，
-// 任何 section inset 下卡片边缘都精确落在 pageSide。
-@interface TBPageSideCellBG : UIView
-@property (nonatomic, strong) UIView *card;
-@property (nonatomic, assign) CGFloat pageSide;
-@end
-
-@implementation TBPageSideCellBG
-- (void)layoutSubviews {
-    [super layoutSubviews];
-
-    UIView *cell = self.superview;
-    while (cell && ![cell isKindOfClass:[UITableViewCell class]]) cell = cell.superview;
-    UITableView *tv = nil;
-    for (UIView *v = cell ?: self; v; v = v.superview) {
-        if ([v isKindOfClass:[UITableView class]]) { tv = (UITableView *)v; break; }
-    }
-
-    CGFloat left = 0.0, right = 0.0;
-    if (cell && tv) {
-        CGRect r = [cell convertRect:cell.bounds toView:tv];
-        left  = self.pageSide - CGRectGetMinX(r);
-        right = self.pageSide - (CGRectGetWidth(tv.bounds) - CGRectGetMaxX(r));
-    }
-    CGFloat w = MAX(0.0, CGRectGetWidth(self.bounds) - left - right);
-    self.card.frame = CGRectMake(left, 2.0, w, MAX(0.0, CGRectGetHeight(self.bounds) - 4.0));
+void TBPrepareTheseusCell(UITableViewCell *cell) {
+    cell.backgroundView = nil;
+    cell.selectedBackgroundView = nil;
+    cell.multipleSelectionBackgroundView = nil;
+    cell.automaticallyUpdatesBackgroundConfiguration = NO;
+    cell.backgroundConfiguration = [UIBackgroundConfiguration clearConfiguration];
+    cell.opaque = NO;
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.opaque = NO;
+    cell.contentView.backgroundColor = [UIColor clearColor];
 }
-@end
 
-UIView *TBGlassCellAtPageSide(CGFloat pageSide) {
-    TBPageSideCellBG *bg = [[TBPageSideCellBG alloc] init];
-    bg.backgroundColor = [UIColor clearColor];
-    bg.pageSide = pageSide;
-    bg.card = TBGlassCard(20);
-    [bg addSubview:bg.card];
-    return bg;
+void TBInstallTheseusCellSurface(UITableViewCell *cell, CGFloat inset) {
+    TBPrepareTheseusCell(cell);
+    UIView *surface = TBGlassCellBG(inset);
+    surface.translatesAutoresizingMaskIntoConstraints = NO;
+    surface.userInteractionEnabled = NO;
+    [cell.contentView insertSubview:surface atIndex:0];
+    [NSLayoutConstraint activateConstraints:@[
+        [surface.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+        [surface.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor],
+        [surface.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+        [surface.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+    ]];
 }
 
 void TBGlassTable(UITableView *tv) {
-    // 表格背景必须透明，否则它会盖住页面底色（默认是白色）
-    // 页面底色由 TBSetPageBackground / TBTableViewController 的背景视图提供
+    // Theseus is the only cell surface; no table-wide decorative backing.
     tv.backgroundColor = [UIColor clearColor];
     tv.separatorStyle = UITableViewCellSeparatorStyleNone;
     tv.backgroundView = nil;
@@ -203,9 +149,4 @@ void TBStyleSearchBarGlass(UISearchBar *searchBar) {
     field.background = nil;
     field.disabledBackground = nil;
     TBApplyTheseusSurface(field, CGRectGetHeight(field.bounds) > 0 ? CGRectGetHeight(field.bounds) / 2 : 18, nil);
-}
-
-void TBInstallGlassSearchBars(void) {
-    // Owned controllers call TBStyleSearchBarGlass after their UIKit layout.
-    // Do not swizzle UISearchBar or change its layout and focus animations.
 }

@@ -45,20 +45,16 @@ static TBThemeListController *TBFindThemeListController(UIViewController *vc, NS
 
 - (BOOL)application:(UIApplication *)application
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    // 0.15.59：搜索框恢复 100% 系统外观 —— 不再安装任何自绘玻璃
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    self.window.backgroundColor = [UIColor clearColor];
     self.window.rootViewController = [[TBRootController alloc] init];
+    [self applyAppearance];
     [self.window makeKeyAndVisible];
-
-    // 背景铺在 window 上，导航栏/标签栏都透明，磨砂才不会被内容滚动带跑
-    TBAttachWindowFrost(self.window);
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(applyAppearance)
                                                  name:@"TBAppearanceChanged"
                                                object:nil];
-    [self applyAppearance];
     return YES;
 }
 

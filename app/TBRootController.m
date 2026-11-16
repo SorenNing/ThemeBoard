@@ -5,12 +5,12 @@
 #import "TBGlass.h"
 #import "TBToast.h"
 #import "TBTheseusDock.h"
+#import "TBBackdropView.h"
 
 @interface TBRootController () <UINavigationControllerDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) NSArray<UIViewController *> *pages;
 @property (nonatomic, strong) TBTheseusDock *dock;
 @property (nonatomic, assign) NSInteger current;
-@property (nonatomic, assign) NSUInteger pageGeneration;
 @end
 
 @implementation TBRootController
@@ -18,6 +18,9 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
+    TBBackdropView *backdrop = [[TBBackdropView alloc] initWithFrame:self.view.bounds];
+    backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:backdrop];
 
     TBThemeListController *themes = [[TBThemeListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
     UINavigationController *nav1 = [[UINavigationController alloc] initWithRootViewController:themes];
@@ -42,7 +45,6 @@
 
     for (UINavigationController *nav in @[nav1, nav2, nav3]) {
         nav.view.backgroundColor = [UIColor clearColor];
-        TBAttachFrostContainer(nav.view);
     }
 
     self.pages = @[nav1, nav2, nav3];
@@ -82,9 +84,10 @@
 - (void)relayout {
     if (!self.dock) return;
     CGFloat height = 64.0;
-    CGFloat width = MAX(0, self.view.bounds.size.width - 36.0);
+    // Three closer item centres and a small even margin around the 96pt pill.
+    CGFloat width = MIN(312.0, MAX(0, self.view.bounds.size.width - 36.0));
     CGFloat bottom = 34.0;
-    CGRect frame = CGRectMake(18.0,
+    CGRect frame = CGRectMake((self.view.bounds.size.width - width) / 2.0,
                               self.view.bounds.size.height - bottom - height,
                               width, height);
     if (!CGRectEqualToRect(self.dock.frame, frame)) self.dock.frame = frame;
@@ -120,35 +123,18 @@
     [TBToast dismissNow];
     UIViewController *old = self.pages[self.current];
     UIViewController *now = self.pages[index];
-    CGFloat direction = index > self.current ? 1 : -1;
-    NSUInteger generation = ++self.pageGeneration;
+    [old beginAppearanceTransition:NO animated:NO];
+    [now beginAppearanceTransition:YES animated:NO];
     self.current = index;
     self.dock.selectedIndex = index;
+    // Only one page is visible. The upstream capsule owns its own animation.
     for (UIViewController *vc in self.pages) {
-        [vc.view.layer removeAllAnimations];
-        vc.view.hidden = vc != old && vc != now;
-        vc.view.alpha = 1;
-        vc.view.transform = CGAffineTransformIdentity;
+        vc.view.hidden = vc != now;
     }
-    now.view.hidden = NO;
     [now.view layoutIfNeeded];
-    now.view.alpha = 0;
-    now.view.transform = CGAffineTransformMakeTranslation(12 * direction, 0);
+    [old endAppearanceTransition];
+    [now endAppearanceTransition];
     [self.dock invalidateBackground];
-    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.35
-                          delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-        now.view.alpha = 1;
-        now.view.transform = CGAffineTransformIdentity;
-        old.view.alpha = 0;
-        old.view.transform = CGAffineTransformMakeTranslation(-12 * direction, 0);
-    } completion:^(BOOL finished) {
-        if (generation != self.pageGeneration) return;
-        old.view.hidden = YES;
-        old.view.alpha = 1;
-        old.view.transform = CGAffineTransformIdentity;
-        [self.dock invalidateBackground];
-    }];
 }
 
 @end

@@ -4,7 +4,7 @@ ThemeBoard's app-owned surfaces use the original Theseus renderer. The reference
 
 ## UI coverage
 
-- The three-tab dock is the original `TheseusTabBar` optics, press lift, drag lens, springs and selection commit. ThemeBoard keeps the approved 64pt height, 18pt side margins and 34pt bottom position; the item width is set to fill the bar rather than the default 198pt. A thin bridge preserves theme/settings/status routes and reselect-to-pop behavior.
+- The three-tab dock uses the original `TheseusTabBar` optics, press lift, drag lens, springs and selection commit. Its height is 64pt, its centered width is the smaller of 312pt and the screen width minus 36pt, and its bottom gap is 34pt. The staged tab component uses equal item slots and a resting capsule up to 96pt wide, with the original native capsule height. A thin bridge preserves theme/settings/status routes and reselect-to-pop behavior.
 - Theme lists, settings, state diagnostics, missing-icon lists, detail summaries and icon preview cards share the original `TheseusConfiguration.regular` material through `TBGlassCard`.
 - Theme toolbar, sorting, log-folder, navigation actions, keyboard Done and swipe-delete buttons use the same material. Selected/primary states use the upstream tint configuration, with text and existing checks kept as foreground content.
 - Confirmation/action/alert/numeric panels, bottom drawers and transient toasts use the same renderer. Their existing callbacks, dismissal, keyboard avoidance, drag anchors and timing remain app behavior.
@@ -12,7 +12,7 @@ ThemeBoard's app-owned surfaces use the original Theseus renderer. The reference
 - App-owned search and numeric text-field surfaces use Theseus without replacing UIKit text editing or swizzling search-field layout.
 - UIKit navigation, system back gestures, keyboard, document pickers, refresh indicators and system-provided menus retain their platform behavior. Theseus does not provide replacements for those services.
 
-The material is supplied by Theseus, not a locally imitated Metal shader or a second blur-and-white overlay. The previous app-owned UIVisualEffectView layers and old dock pill code were removed. The page backing now follows the system grouped background in light and dark mode.
+The material is supplied by Theseus. Previous app-owned UIVisualEffectView layers, page backing helpers, background-view cell plates, the unused combined preview card, global swipe-layout replacement and cross-fading tab pages have been removed. One `TBBackdropView` sits below all pages and fills the screen with the selected background 04. Its original light image and derived dark image are bundled locally and switch with the active app appearance. Page, navigation and window backgrounds are clear; UIKit adjusts full-page scroll content for the transparent bars.
 
 ## Capture and lifecycle
 
@@ -20,9 +20,11 @@ The material is supplied by Theseus, not a locally imitated Metal shader or a se
 
 The dock invalidates its backdrop during visible scrolling and page transitions, and at a lower cadence while idle. VoiceOver activation proxies the original item labels, traits and frames while preserving reselect-to-pop. The slider adapter is a UIControl that composes the final upstream TheseusSlider. It forwards physical begin/continue/end/cancel tracking to the original component and preserves non-continuous accessibility adjustments; it does not inherit or alter TheseusSlider.
 
-## 1.52 visual repair
+## Source cleanup after 1.52 device feedback
 
-The supplied 1.51 device recording shows squared glass bounds, clipped row shadows and page content overlapping navigation bars. `tools/prepare_theseus_sources.py` pins the original Theseus bytes, stages an explicitly hashed build copy, sizes the transparent Metal presentation to the complete padded drawable, captures the backdrop once at the same extent, and gives no-snapshot capture veils a rounded contour without changing shader or gesture physics. App-owned row ancestors stop clipping the glass rim; table, status and detail scroll viewports are constrained to the navigation/safe-area bounds. These changes are source-level fixes and require native visual comparison before claiming every device artifact is gone.
+`tools/prepare_theseus_sources.py` still verifies the pinned vendor files, but its disposable build copy now changes only the selected tab's geometry. The previous Metal-host, renderer, capture-veil and capture-transaction rewrites have been removed; those staged files, materials and shader are upstream bytes. App host adaptation uses Theseus's shared display-link driver before render callbacks. Parent surfaces notify their nested surfaces after a new capture snapshot is available. Cells place one noninteractive material below their foreground content with their UIKit background configuration cleared.
+
+The cleaned Objective-C UI files pass arm64e syntax checks with existing warnings; the 37 upstream files pass their integrity checks. This revision has not been natively Swift/Metal compiled, packaged, or device tested. The source version remains 1.52; previous delivered packages do not contain this cleanup. These source changes require native visual comparison before claiming device rectangles or flashes are gone.
 
 ## Build
 

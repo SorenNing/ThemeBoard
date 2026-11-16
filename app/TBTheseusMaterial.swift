@@ -7,15 +7,16 @@ import QuartzCore
 private final class TBSurfaceVisibility: NSObject {
     static let shared = TBSurfaceVisibility()
     private let surfaces = NSHashTable<TBTheseusSurface>.weakObjects()
-    private var link: CADisplayLink?
+    private var link: DisplayLinkDriver.Link?
 
     func register(_ surface: TBTheseusSurface) {
         surfaces.add(surface)
         guard link == nil else { return }
-        let driver = CADisplayLink(target: self, selector: #selector(tick))
-        driver.preferredFramesPerSecond = 15
-        driver.add(to: .main, forMode: .common)
-        link = driver
+        // Run invalidation before Theseus's render callbacks, not on a second
+        // unsynchronised 15Hz CADisplayLink.
+        link = DisplayLinkDriver.shared.add(framesPerSecond: .fps(60), priority: .animation) { [weak self] _ in
+            self?.tick()
+        }
     }
 
     func unregister(_ surface: TBTheseusSurface) {
@@ -42,6 +43,8 @@ final class TBTheseusSurface: UIView {
     private var lastBackdropRefresh: CFTimeInterval = 0
     private var warmupFrames = 2
 
+    private let dependents = NSHashTable<TBTheseusSurface>.weakObjects()
+    private weak var parentSurface: TBTheseusSurface?
     private var lastExclusions: [ObjectIdentifier] = []
     @objc var cornerRadius: CGFloat = 20 {
         didSet { if cornerRadius != oldValue { updateMaterial() } }
@@ -69,6 +72,12 @@ final class TBTheseusSurface: UIView {
         glass.isUserInteractionEnabled = false
         glass.continuousUpdate = false
         glass.providesCaptureSnapshot = true
+        glass.snapshotDidUpdate = { [weak self] in
+            guard let self else { return }
+            for dependent in self.dependents.allObjects where dependent.renderingVisible {
+                dependent.glass.invalidateBackground()
+            }
+        }
         glass.pauseRendering()
         addSubview(glass)
         updateMaterial()
@@ -97,6 +106,22 @@ final class TBTheseusSurface: UIView {
             }
             if parent === window { break }
             branch = parent
+        }
+        var nextParent: TBTheseusSurface?
+        var owner = superview?.superview
+        while let ancestor = owner {
+            if let surface = ancestor.subviews.compactMap({ $0 as? TBTheseusSurface }).first,
+               surface !== self {
+                nextParent = surface
+                break
+            }
+            owner = ancestor.superview
+        }
+        if nextParent !== parentSurface {
+            parentSurface?.dependents.remove(self)
+            parentSurface = nextParent
+            nextParent?.dependents.add(self)
+            glass.invalidateBackground()
         }
         let identities = excluded.map { ObjectIdentifier($0) }
         if glass.sourceView !== window || identities != lastExclusions {

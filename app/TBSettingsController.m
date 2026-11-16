@@ -151,10 +151,7 @@
     NSDictionary *row = self.model[indexPath.section][indexPath.row];
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                                    reuseIdentifier:nil];
-    cell.backgroundColor = [UIColor clearColor];
-    cell.contentView.backgroundColor = [UIColor clearColor];
-    cell.backgroundView = TBGlassCellBG(12);
-    cell.selectedBackgroundView = nil;
+    TBInstallTheseusCellSurface(cell, 12);
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.textLabel.text = row[@"t"];
     if (row[@"icon"]) {

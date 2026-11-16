@@ -82,28 +82,14 @@ static NSString *TBReadLogLossy(NSString *path) {
     // 顺序不能反：TBGlassTable 会把 backgroundColor 清成透明
 
 
-    self.table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
-    self.table.translatesAutoresizingMaskIntoConstraints = NO;
-    self.table.clipsToBounds = YES;
-    self.table.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    self.table.automaticallyAdjustsScrollIndicatorInsets = NO;
+    self.table = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    self.table.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.rowHeight = 52;
     self.table.estimatedSectionHeaderHeight = 24;
     TBGlassTable(self.table);
-    TBSetPageBackground(self);
     [self.view addSubview:self.table];
-    // 根背景仍铺满；表格与其中的日志只在导航栏和浮动底栏之间绘制。
-    [NSLayoutConstraint activateConstraints:@[
-        [self.table.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [self.table.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.table.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.table.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
-    ]];
-    if (@available(iOS 15.0, *)) {
-        [self setContentScrollView:self.table forEdge:NSDirectionalRectEdgeTop];
-    }
 
     self.navigationItem.rightBarButtonItem =
         TBGlassNavigationItem(@"刷新", nil, self, @selector(refresh));
@@ -210,10 +196,7 @@ static NSString *TBReadLogLossy(NSString *path) {
 
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-    cell.backgroundColor = [UIColor clearColor];
-    cell.contentView.backgroundColor = [UIColor clearColor];
-    cell.backgroundView = TBGlassCellBG(12);
-    cell.selectedBackgroundView = nil;
+    TBInstallTheseusCellSurface(cell, 12);
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
@@ -274,9 +257,6 @@ static NSString *TBReadLogLossy(NSString *path) {
         UITextView *tv = [[UITextView alloc] initWithFrame:CGRectZero];
         tv.translatesAutoresizingMaskIntoConstraints = NO;
         tv.backgroundColor = [UIColor clearColor];
-        tv.clipsToBounds = YES;
-        tv.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-        tv.automaticallyAdjustsScrollIndicatorInsets = NO;
         tv.editable = NO;
         // 长行（bundleID / 路径）也要折行，否则右边直接被裁掉
         tv.textContainer.widthTracksTextView = YES;

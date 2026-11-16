@@ -302,96 +302,6 @@ static const CGFloat kTBGridTextBlock = 26.0;   // 只留标题那一行的高�
 
 @end
 
-#pragma mark - 预览合并卡（遮罩预览 + 前几个图标，一张卡内 2×3 并排）
-
-static const CGFloat kTBPreviewPad  = 14.0;
-static const CGFloat kTBPreviewGap  = 12.0;
-static const CGFloat kTBPreviewImgH = 76.0;
-static const CGFloat kTBPreviewCapH = 26.0;
-
-/// 合并预览卡的高度（宽度 = 卡宽）。卡内是 3 列 × 2 行，第 0 格是遮罩预览。
-static CGFloat TBPreviewCardHeight(CGFloat width) {
-    CGFloat innerW = width - kTBPreviewPad * 2.0;
-    CGFloat slotW = (innerW - kTBPreviewGap * 2.0) / 3.0;
-    CGFloat imgH = MIN(kTBPreviewImgH, MAX(40.0, slotW));
-    return kTBPreviewPad * 2.0 + (imgH + 4.0 + kTBPreviewCapH) * 2.0 + kTBPreviewGap;
-}
-
-@interface TBPreviewCardCell : UICollectionViewCell
-@property (nonatomic, strong) UIView *card;
-@property (nonatomic, strong) NSMutableArray<UIImageView *> *slots;
-@property (nonatomic, strong) NSMutableArray<UILabel *> *caps;
-@end
-
-@implementation TBPreviewCardCell
-
-- (instancetype)initWithFrame:(CGRect)frame {
-    if ((self = [super initWithFrame:frame])) {
-        self.backgroundColor = [UIColor clearColor];
-        self.contentView.backgroundColor = [UIColor clearColor];
-
-        _card = TBGlassCard(kTBCardRadius);       // 一张卡装下全部预览
-        _card.clipsToBounds = YES;
-        [self.contentView addSubview:_card];
-
-        _slots = [NSMutableArray array];
-        _caps = [NSMutableArray array];
-        for (NSInteger i = 0; i < 6; i++) {
-            UIImageView *iv = [[UIImageView alloc] init];
-            iv.contentMode = UIViewContentModeScaleAspectFit;
-            iv.clipsToBounds = NO;
-            iv.hidden = YES;
-            [_card addSubview:iv];
-            [_slots addObject:iv];
-
-            UILabel *cl = [[UILabel alloc] init];
-            cl.font = [UIFont systemFontOfSize:9.5];
-            cl.textColor = [UIColor secondaryLabelColor];
-            cl.textAlignment = NSTextAlignmentCenter;
-            cl.numberOfLines = 2;
-            cl.lineBreakMode = NSLineBreakByTruncatingTail;
-            cl.hidden = YES;
-            [_card addSubview:cl];
-            [_caps addObject:cl];
-        }
-    }
-    return self;
-}
-
-/// 第 0 格 = 遮罩预览（配说明），后面依次是主题里的前几个图标
-- (void)setPreviewImages:(NSArray *)images captions:(NSArray<NSString *> *)captions {
-    for (NSInteger i = 0; i < (NSInteger)self.slots.count; i++) {
-        UIImageView *iv = self.slots[i];
-        UILabel *cap = self.caps[i];
-        id o = (i < (NSInteger)images.count) ? images[i] : nil;
-        UIImage *im = [o isKindOfClass:[UIImage class]] ? o : nil;
-        NSString *tx = (i < (NSInteger)captions.count) ? captions[i] : nil;
-        if (!tx.length) tx = nil;
-        iv.image = im;
-        cap.text = tx;
-        iv.hidden = (im == nil);
-        cap.hidden = (tx == nil);
-    }
-}
-
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    CGRect b = self.contentView.bounds;
-    self.card.frame = b;
-    CGFloat innerW = b.size.width - kTBPreviewPad * 2.0;
-    CGFloat slotW = (innerW - kTBPreviewGap * 2.0) / 3.0;
-    CGFloat imgH = MIN(kTBPreviewImgH, MAX(40.0, slotW));
-    for (NSInteger i = 0; i < (NSInteger)self.slots.count; i++) {
-        NSInteger row = i / 3, col = i % 3;
-        CGFloat x = kTBPreviewPad + col * (slotW + kTBPreviewGap);
-        CGFloat y = kTBPreviewPad + row * (imgH + 4.0 + kTBPreviewCapH + kTBPreviewGap);
-        self.slots[i].frame = CGRectMake(x, y, slotW, imgH);
-        self.caps[i].frame = CGRectMake(x - 2, y + imgH + 4.0, slotW + 4, kTBPreviewCapH);
-    }
-}
-
-@end
-
 #pragma mark - 分区标题
 
 @interface TBSectionHeaderView : UICollectionReusableView
@@ -425,7 +335,6 @@ static CGFloat TBPreviewCardHeight(CGFloat width) {
 @property (nonatomic, strong) NSArray<NSString *> *bids;        // 搜索过滤后
 @property (nonatomic, strong) NSArray<NSString *> *previewBids; // 预览方卡用的前几个
 @property (nonatomic, strong) UISearchController *search;
-@property (nonatomic, strong) UIView *bgView;
 @property (nonatomic, strong) UICollectionView *collectionView;
 @property (nonatomic, assign) NSUInteger covered;
 @property (nonatomic, assign) NSUInteger installed;
@@ -528,11 +437,6 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
 - (void)tb_buildUI {
     self.view.backgroundColor = [UIColor clearColor];
 
-    self.bgView = [[UIView alloc] initWithFrame:self.view.bounds];
-    self.bgView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.bgView.userInteractionEnabled = NO;
-    [self.view addSubview:self.bgView];
-    TBApplyPageBackground(self.bgView);
 
     UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
     layout.minimumInteritemSpacing = kTBCardGap;
@@ -545,10 +449,7 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     self.collectionView.alwaysBounceVertical = YES;
     self.collectionView.dataSource = self;
     self.collectionView.delegate = self;
-    // 视口本身避开导航栏/底栏，避免只调整内容后仍能滚入透明栏下。
-    self.collectionView.clipsToBounds = YES;
-    self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    self.collectionView.automaticallyAdjustsScrollIndicatorInsets = NO;
+    self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
     // ★ 0.15.57：两种形态用各自的 reuse identifier，cell 从创建起就只会是那一种形态，
     //   不会出现「compact 卡被网格复用 / 网格卡被 compact 复用」→ 约束来回换 → 闪一下。
     [self.collectionView registerClass:[TBSquareCardCell class]
@@ -565,14 +466,11 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     [self.view addSubview:self.collectionView];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
-    if (@available(iOS 15.0, *)) {
-        [self setContentScrollView:self.collectionView forEdge:NSDirectionalRectEdgeTop];
-    }
 }
 
 - (void)viewDidLayoutSubviews {
