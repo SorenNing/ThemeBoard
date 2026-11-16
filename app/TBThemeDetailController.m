@@ -339,6 +339,8 @@ static const CGFloat kTBGridTextBlock = 26.0;   // 只留标题那一行的高�
 @property (nonatomic, assign) NSUInteger covered;
 @property (nonatomic, assign) NSUInteger installed;
 @property (nonatomic, assign) BOOL active;
+@property (nonatomic, copy) NSString *coverageItemTitle;
+- (void)tb_configureActionCell:(TBSquareCardCell *)cell atIndex:(NSInteger)index;
 @property (nonatomic, assign) NSUInteger applyFeedbackGeneration;
 @property (nonatomic, strong) UIImage *maskPreviewImage;   // 遮罩预览（已按当前形状裁好）
 @property (nonatomic, copy) NSString *maskPreviewCaption;
@@ -428,8 +430,10 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
 /// 遮罩/特效参数变了 → 重算预览并只重载「预览」分区
 - (void)tb_prefsChanged {
     [self refreshMaskPreview];
-    if (self.collectionView.numberOfSections > 1) {
-        [self.collectionView reloadSections:[NSIndexSet indexSetWithIndex:1]];
+    TBShapePreviewCell *preview = (TBShapePreviewCell *)[self.collectionView cellForItemAtIndexPath:[NSIndexPath indexPathForItem:0 inSection:1]];
+    if ([preview isKindOfClass:[TBShapePreviewCell class]]) {
+        preview.imageView.image = self.maskPreviewImage;
+        preview.captionLabel.text = self.maskPreviewCaption.length ? self.maskPreviewCaption : @"遮罩预览";
     }
 }
 
@@ -480,9 +484,10 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self refreshMaskPreview];      // 遮罩形状参数可能在别处改过
+    // Update foreground values in place. Rebuilding the four material cells
+    // during a push/pop discards their GPU snapshots and flashes their first frame.
+    [self tb_prefsChanged];
     [self refreshApplyState];
-    [self.collectionView reloadData];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -504,13 +509,19 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
 - (void)refreshApplyState {
     self.active = [[TBPrefs stringForKey:TBKeyActiveTheme] isEqualToString:self.theme.name];
     NSUInteger miss = self.installed > self.covered ? self.installed - self.covered : 0;
-    self.navigationItem.rightBarButtonItems = @[
-        TBGlassNavigationItem(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖",
-                              nil, self, @selector(missingTapped)),
-    ];
-    if (self.collectionView.numberOfSections > 0) {
-        [self.collectionView reloadSections:[NSIndexSet indexSetWithIndex:0]];
+    NSString *title = miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖";
+    if (![self.coverageItemTitle isEqualToString:title]) {
+        self.coverageItemTitle = title;
+        self.navigationItem.rightBarButtonItems = @[
+            TBGlassNavigationItem(title, nil, self, @selector(missingTapped)),
+        ];
     }
+    [UIView performWithoutAnimation:^{
+        for (NSInteger index = 0; index < 4; index++) {
+            TBSquareCardCell *cell = (TBSquareCardCell *)[self.collectionView cellForItemAtIndexPath:[NSIndexPath indexPathForItem:index inSection:0]];
+            if ([cell isKindOfClass:[TBSquareCardCell class]]) [self tb_configureActionCell:cell atIndex:index];
+        }
+    }];
 }
 
 #pragma mark - 遮罩预览
@@ -801,6 +812,38 @@ heightForHeaderInSection:(NSInteger)s {
     return CGSizeMake(col, iconH + kTBGridTextBlock);
 }
 
+- (void)tb_configureActionCell:(TBSquareCardCell *)cell atIndex:(NSInteger)index {
+    NSString *sym = nil;
+    switch (index) {
+        case 0: sym = @"square.grid.2x2"; break;
+        case 1: sym = self.active ? @"checkmark.circle.fill" : @"checkmark.circle"; break;
+        case 2: sym = @"arrow.uturn.backward.circle"; break;
+        default: sym = @"square.and.arrow.up"; break;
+    }
+    UIImageSymbolConfiguration *sc =
+        [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIFontWeightRegular];
+    cell.icon.image = [[UIImage systemImageNamed:sym withConfiguration:sc]
+                       imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    cell.icon.contentMode = UIViewContentModeCenter;
+    if (index == 0) {
+        cell.titleLabel.text = @"概览";
+        cell.captionLabel.text = [NSString stringWithFormat:@"%lu 个图标\n覆盖 %lu/%lu · %lu 文件",
+                                  (unsigned long)self.allBids.count, (unsigned long)self.covered,
+                                  (unsigned long)self.installed, (unsigned long)self.theme.fileCount];
+    } else if (index == 1) {
+        cell.titleLabel.text = self.active ? @"已应用" : @"应用主题";
+        cell.captionLabel.text = self.active ? @"当前正在使用" : @"点一下立即换图";
+    } else if (index == 2) {
+        cell.titleLabel.text = @"取消应用";
+        cell.captionLabel.text = self.active ? @"恢复系统图标\n（不删主题）" : @"当前未应用";
+    } else {
+        cell.titleLabel.text = @"导出";
+        cell.captionLabel.text = @"导出已覆盖图标\n到“文件”App";
+    }
+    cell.icon.alpha = (index == 1 && self.active) ? 0.6 : 1.0;
+    cell.titleLabel.textColor = ([UIColor labelColor]);
+}
+
 - (UICollectionViewCell *)collectionView:(UICollectionView *)cv
                   cellForItemAtIndexPath:(NSIndexPath *)ip {
     // 预览分区：第 1 张「系统形态」（遮罩合成图），第 2 张「图标预览」（2×2 四个图标）
@@ -826,35 +869,7 @@ heightForHeaderInSection:(NSInteger)s {
     cell.compact = (ip.section == 0);   // 与 identifier 一一对应，幂等，不会换约束
     cell.captionLabel.hidden = NO;
     if (ip.section == 0) {
-        NSString *sym = nil;
-        switch (ip.item) {
-            case 0: sym = @"square.grid.2x2"; break;
-            case 1: sym = self.active ? @"checkmark.circle.fill" : @"checkmark.circle"; break;
-            case 2: sym = @"arrow.uturn.backward.circle"; break;
-            default: sym = @"square.and.arrow.up"; break;
-        }
-        UIImageSymbolConfiguration *sc =
-            [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIFontWeightRegular];
-        cell.icon.image = [[UIImage systemImageNamed:sym withConfiguration:sc]
-                           imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        cell.icon.contentMode = UIViewContentModeCenter;
-        if (ip.item == 0) {
-            cell.titleLabel.text = @"概览";
-            cell.captionLabel.text = [NSString stringWithFormat:@"%lu 个图标\n覆盖 %lu/%lu · %lu 文件",
-                                      (unsigned long)self.allBids.count, (unsigned long)self.covered,
-                                      (unsigned long)self.installed, (unsigned long)self.theme.fileCount];
-        } else if (ip.item == 1) {
-            cell.titleLabel.text = self.active ? @"已应用" : @"应用主题";
-            cell.captionLabel.text = self.active ? @"当前正在使用" : @"点一下立即换图";
-        } else if (ip.item == 2) {
-            cell.titleLabel.text = @"取消应用";
-            cell.captionLabel.text = self.active ? @"恢复系统图标\n（不删主题）" : @"当前未应用";
-        } else {
-            cell.titleLabel.text = @"导出";
-            cell.captionLabel.text = @"导出已覆盖图标\n到“文件”App";
-        }
-        cell.icon.alpha = (ip.item == 1 && self.active) ? 0.6 : 1.0;
-        cell.titleLabel.textColor = ([UIColor labelColor]);
+        [self tb_configureActionCell:cell atIndex:ip.item];
         return cell;
     }
 

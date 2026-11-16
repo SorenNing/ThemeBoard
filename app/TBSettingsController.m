@@ -103,8 +103,15 @@
 
 - (void)runtimeChanged:(NSNotification *)notification {
     if (!self.isViewLoaded || !self.view.window) return;
-    if (self.tableView.numberOfSections > 0)
-        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0 inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+    if (!cell) return;
+    NSString *state = [TBEngineInstaller runtimeState];
+    if ([cell.detailTextLabel.text isEqualToString:state]) return;
+    [UIView performWithoutAnimation:^{
+        cell.detailTextLabel.text = state;
+        cell.detailTextLabel.textColor = [state isEqualToString:@"运行中"]
+            ? [UIColor systemGreenColor] : [UIColor secondaryLabelColor];
+    }];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return self.model.count; }

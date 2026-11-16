@@ -6,11 +6,15 @@
 #import "TBToast.h"
 #import "TBTheseusDock.h"
 #import "TBBackdropView.h"
+#import "TBTheseusMaterial.h"
 
 @interface TBRootController () <UINavigationControllerDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) NSArray<UIViewController *> *pages;
 @property (nonatomic, strong) TBTheseusDock *dock;
 @property (nonatomic, assign) NSInteger current;
+@property (nonatomic, strong) TBBackdropView *backdrop;
+@property (nonatomic, strong) TBBackdropView *transitionBackdrop;
+- (void)tb_refreshGlassInView:(UIView *)view;
 @end
 
 @implementation TBRootController
@@ -21,6 +25,7 @@
     TBBackdropView *backdrop = [[TBBackdropView alloc] initWithFrame:self.view.bounds];
     backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:backdrop];
+    self.backdrop = backdrop;
 
     TBThemeListController *themes = [[TBThemeListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
     UINavigationController *nav1 = [[UINavigationController alloc] initWithRootViewController:themes];
@@ -109,6 +114,55 @@
         [(UINavigationController *)owner.pages[index] popToRootViewControllerAnimated:YES];
     };
     [self.view addSubview:self.dock];
+}
+
+- (void)tb_refreshGlassInView:(UIView *)view {
+    if (view.hidden || view.alpha <= 0.001) return;
+    if ([view isKindOfClass:[TBTheseusSurface class]]) {
+        [(TBTheseusSurface *)view invalidateBackground];
+    }
+    for (UIView *child in view.subviews) [self tb_refreshGlassInView:child];
+}
+
+- (void)navigationController:(UINavigationController *)navigationController
+     willShowViewController:(UIViewController *)viewController animated:(BOOL)animated {
+    id<UIViewControllerTransitionCoordinator> coordinator = navigationController.transitionCoordinator;
+    if (!animated || !coordinator || self.transitionBackdrop) return;
+    UIViewController *from = [coordinator viewControllerForKey:UITransitionContextFromViewControllerKey];
+    UIViewController *to = [coordinator viewControllerForKey:UITransitionContextToViewControllerKey];
+    if (!from || !to) return;
+    BOOL pushing = [navigationController.viewControllers containsObject:from];
+    UIView *front = pushing ? to.view : from.view;
+    // The front page gets an opaque copy only for the navigation transaction.
+    // On pop it moves with the outgoing page, leaving the destination visible.
+    TBBackdropView *cover = [[TBBackdropView alloc] initWithFrame:CGRectZero];
+    cover.image = self.backdrop.image;
+    // Keep the cover in the moving page's own bounds. Converting the screen
+    // rect while UIKit has that page offscreen gives it a negative X offset.
+    cover.frame = front.bounds;
+    cover.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [front insertSubview:cover atIndex:0];
+    self.transitionBackdrop = cover;
+    __weak TBRootController *weakSelf = self;
+    void (^finish)(void) = ^{
+        [cover removeFromSuperview];
+        TBRootController *owner = weakSelf;
+        if (!owner) return;
+        if (owner.transitionBackdrop == cover) owner.transitionBackdrop = nil;
+        [owner tb_refreshGlassInView:navigationController.topViewController.view];
+        [owner.dock invalidateBackground];
+    };
+    BOOL registered = [coordinator animateAlongsideTransition:nil
+        completion:^(id<UIViewControllerTransitionCoordinatorContext> context) { finish(); }];
+    if (!registered) finish();
+}
+
+- (void)navigationController:(UINavigationController *)navigationController
+      didShowViewController:(UIViewController *)viewController animated:(BOOL)animated {
+    [self.transitionBackdrop removeFromSuperview];
+    self.transitionBackdrop = nil;
+    [self tb_refreshGlassInView:viewController.view];
+    [self.dock invalidateBackground];
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {

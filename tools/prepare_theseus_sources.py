@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Stage pinned Theseus; adapt only user-requested tab geometry.
+"""Stage pinned optics with explicit geometry and capture presentation fixes.
 
-The renderer, shader, capture, material and control physics remain upstream bytes.
-No legacy app renderer, padded-host rewrite or capture substitute is retained.
+Vendor and shader bytes remain upstream. Presentation patches are hashed and
+isolated in the disposable build copy; lens physics and materials are unchanged.
 """
 import argparse
 import hashlib
@@ -63,9 +63,12 @@ def prepare(root, output):
     path.write_text(text)
     changes[str(path.relative_to(output))] = {'before': hashlib.sha256(original.encode()).hexdigest(), 'after': hashlib.sha256(text.encode()).hexdigest()}
 
+    from theseus_presentation_fixes import apply
+    apply(output, changes, replace_once)
+
     record = {'upstream_commit': provenance['commit'], 'vendor_modified': False,
-              'patches': changes, 'shaders_modified': False, 'renderer_modified': False,
-              'capture_modified': False, 'materials_modified': False, 'native_ui_validated': False}
+              'patches': changes, 'shaders_modified': False, 'renderer_modified': True,
+              'capture_modified': True, 'materials_modified': False, 'native_ui_validated': False}
     (output.parent / 'theseus-compatibility.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
 
