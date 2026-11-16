@@ -1,4 +1,5 @@
 #import "TBPanelController.h"
+#import <objc/runtime.h>
 #import "TBThemeListController.h"
 #import "TBThemeDetailController.h"
 #import "TBThemeScanner.h"
@@ -43,14 +44,25 @@ static UIView *TBFindSwipePullView(UIView *root, NSInteger depth) {
     return nil;
 }
 
+// ── 以下三段 = v0.15.41（commit 6868857）原样搬回 ──────────────────────────
 static void TBPaintRedLabels(UIView *v, NSInteger depth);
 
 static void TBStyleSwipePullView(UIView *pull) {
+    CGFloat scale = [UIScreen mainScreen].scale;
     pull.backgroundColor = [UIColor clearColor];
     pull.layer.cornerRadius = 20;
+    pull.layer.cornerCurve = kCACornerCurveContinuous;
     pull.clipsToBounds = YES;
-    for (UIView *btn in [pull.subviews copy]) {
-        TBApplyTheseusSurface(btn, 20, nil);
+
+    for (UIView *btn in pull.subviews) {
+        btn.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                             [UIColor colorWithWhite:1 alpha:0.14]);
+        btn.layer.cornerRadius = 20;
+        btn.layer.cornerCurve = kCACornerCurveContinuous;
+        btn.clipsToBounds = YES;
+        btn.layer.borderWidth = 1.0 / scale;
+        btn.layer.borderColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
+                                               [UIColor colorWithWhite:1 alpha:0.20]).CGColor;
         TBPaintRedLabels(btn, 0);
     }
 }
@@ -67,9 +79,19 @@ static void TBPaintRedLabels(UIView *v, NSInteger depth) {
     }
 }
 
+/// 滑动容器每次布局都重新套样式：样式和原来一模一样，只是时机提前到首帧之前，
+/// 不会先闪一下系统灰底，也不会因为「那次没抓到」而整行变灰。
+static void (*o_swipePullLayout)(id, SEL);
+static void tb_swipePullLayout(id self, SEL _cmd) {
+    if (o_swipePullLayout) o_swipePullLayout(self, _cmd);
+    if ([self isKindOfClass:[UIView class]]) TBStyleSwipePullView((UIView *)self);
+}
+
+
 @implementation TBThemeListController
 
 - (void)viewDidLoad {
+    [TBThemeListController tb_installSwipeStyle];
     [super viewDidLoad];
     self.title = @"主题";
     self.tableView.rowHeight = 76;
@@ -105,11 +127,6 @@ static void TBPaintRedLabels(UIView *v, NSInteger depth) {
     [TBPrefs setString:[TBThemeScanner containerThemesDir] forKey:@"ThemeRoot"];
     [TBPrefs synchronize];
     [self reload];
-}
-
-- (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
-    TBStyleSearchBarGlass(self.search.searchBar);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -348,7 +365,11 @@ didPickDocumentAtURL:(NSURL *)url {
         b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
         [b setTitleColor:(i == 2 ? [UIColor systemRedColor] : [UIColor labelColor])
                 forState:UIControlStateNormal];
-        TBApplyTheseusSurface(b, 13, nil);
+        b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                           [UIColor colorWithWhite:1 alpha:0.14]);
+        b.layer.cornerRadius = 13;
+        b.layer.cornerCurve = kCACornerCurveContinuous;
+        TBApplyRim(b, 0.55);
         b.tag = i;
         [all addObject:b];
     }
@@ -483,7 +504,11 @@ static const CGFloat kTBListHeaderInset = 32.0;
         [sort setImage:[UIImage systemImageNamed:@"arrow.up.arrow.down" withConfiguration:sc]
               forState:UIControlStateNormal];
         sort.tintColor = [UIColor labelColor];
-        TBApplyTheseusSurface(sort, 10, nil);
+        sort.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                              [UIColor colorWithWhite:1 alpha:0.14]);
+        sort.layer.cornerRadius = 10;
+        sort.layer.cornerCurve = kCACornerCurveContinuous;
+        TBApplyRim(sort, 0.55);
         sort.frame = CGRectMake(w - kTBListHeaderInset - 40.0, (h - 32.0) / 2.0 - 5.0, 40.0, 32.0);   // 0.15.60 起：上移 5pt，与分组标题文字视觉居中
         sort.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
         [sort addTarget:self action:@selector(sortTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -513,7 +538,8 @@ static const CGFloat kTBListHeaderInset = 32.0;
     if (indexPath.section == 1) {
         UITableViewCell *bc = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                      reuseIdentifier:nil];
-        TBPrepareTheseusCell(bc);
+        bc.backgroundColor = [UIColor clearColor];
+        bc.contentView.backgroundColor = [UIColor clearColor];
         bc.selectionStyle = UITableViewCellSelectionStyleNone;
         UIView *bar = [self buildToolbarBar];
         bar.translatesAutoresizingMaskIntoConstraints = NO;
@@ -531,7 +557,22 @@ static const CGFloat kTBListHeaderInset = 32.0;
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cid];
-        TBInstallTheseusCellSurface(cell, 12);
+        cell.backgroundColor = [UIColor clearColor];
+        cell.contentView.backgroundColor = [UIColor clearColor];
+        // 卡片必须放进 contentView：系统左滑只平移 contentView，挂在 backgroundView
+        // 上的卡片不会跟着走（表现就是内容左移、卡片留在原地，内容跑到卡片外面）。
+        UIView *bg = TBGlassCellBG(12);
+        bg.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView insertSubview:bg atIndex:0];
+        [NSLayoutConstraint activateConstraints:@[
+            [bg.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+            // 注意贴 cell 而不是 contentView：contentView 不含右侧附件区，
+            // 贴它卡片会变窄，✓ 就露到卡片外面去了
+            [bg.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor],
+            [bg.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+            [bg.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+        ]];
+        cell.selectedBackgroundView = nil;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.imageView.layer.cornerRadius = 11;
         cell.imageView.layer.cornerCurve = kCACornerCurveContinuous;
@@ -730,7 +771,30 @@ static const CGFloat kTBListHeaderInset = 32.0;
 
 #pragma mark - 删除
 
-// UIKit owns the swipe transaction; the app-owned action uses Theseus.
+// ══════════════════════════════════════════════════════════════════════════
+//  左滑「删除」整段恢复 v0.15.41（commit 6868857）的实现 —— 用户点名那版观感 / 交互都没问题，
+//  0.15.57~0.15.61 期间加的「即时删除 + TBToast + CALayer 玻璃子层 + CGRectInset」全部撤掉。
+//  唯一保留的一条工程约束（不改观感）：
+//    · hook 必须先调原实现（引擎侧那条替换了 layoutSubviews 却不调原实现的 hook 已永久移除）；
+//    · UIContextualAction 的 handler 先【同步】调用 completionHandler，再下一拍 present 确认弹窗，
+//      否则 UIKit 的 swipe 事务收尾时会算错按钮数（NSInternalInconsistencyException）。
+// ══════════════════════════════════════════════════════════════════════════
+
+/// 给这一行套上样式；找不到滑动容器返回 NO（外观与原来完全一致，只是把
+/// 「找容器」这件事做得更彻底：cell / cell 的父视图 / 表格 / 整个窗口都试一遍）
++ (void)tb_installSwipeStyle {
+    static BOOL done = NO;
+    if (done) return;
+    done = YES;
+    Class pull = NSClassFromString(@"UISwipeActionPullView");
+    if (!pull) return;
+    Method m = class_getInstanceMethod(pull, @selector(layoutSubviews));
+    if (m) {
+        o_swipePullLayout = (void (*)(id, SEL))method_getImplementation(m);
+        method_setImplementation(m, (IMP)tb_swipePullLayout);
+    }
+}
+
 - (BOOL)styleSwipeForRowAtIndexPath:(NSIndexPath *)indexPath tableView:(UITableView *)tableView {
     UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
     UIView *root = cell ? (cell.superview ?: cell) : tableView;
@@ -761,7 +825,7 @@ willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPa
     // ★★ 0.15.64：滑动开始时【不再清空勾】。用户必现路径：先滑别的行 → 再滑带 ✓ 那行，
     //    勾会消失（就是这行清空造成的），取消滑动才回来。现在让 ✓ 全程显示。
     [self tb_startSwipeWatch];
-    // Only style this editing row; no global UIKit layout replacement.
+    // 原版：0.05 秒后给这一行套样式（现在 swizzle 也会套，这里保留做兜底）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [self styleSwipeForRowAtIndexPath:indexPath tableView:tableView];

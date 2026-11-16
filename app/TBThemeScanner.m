@@ -558,17 +558,17 @@ static BOOL TBIsThemeLikeDirectory(NSString *dir) {
         if (!unzipped) {
             TBLog2(@"[导入][zip] 内置解压失败（%@），改试系统 unzip", e.localizedDescription ?: @"-");
             [[NSFileManager defaultManager] createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:NULL];
-            NSArray<NSString *> *cands = @[TBInstallationPath(@"usr/bin/unzip"), @"/var/jb/usr/bin/unzip", @"/usr/bin/unzip"];
-            for (NSString *tool in cands) {
-                if (unzipped) break;
-                if (![[NSFileManager defaultManager] isExecutableFileAtPath:tool]) continue;
-                const char *bin = tool.fileSystemRepresentation;
-                const char *argv[] = {bin, "-o", "-q", url.path.UTF8String, "-d", tmp.UTF8String, NULL};
+            const char *cands[] = {"/var/jb/usr/bin/unzip", "/usr/bin/unzip"};
+            for (int i = 0; i < 2 && !unzipped; i++) {
+                if (![[NSFileManager defaultManager] isExecutableFileAtPath:@(cands[i])]) continue;
+                const char *argv[] = {cands[i], "-o", "-q", url.path.UTF8String, "-d", tmp.UTF8String, NULL};
                 pid_t pid; int st = 0;
-                if (posix_spawn(&pid, bin, NULL, NULL, (char *const *)argv, environ) == 0) {
+                if (posix_spawn(&pid, cands[i], NULL, NULL, (char *const *)argv, environ) == 0) {
                     waitpid(pid, &st, 0);
-                    unzipped = (WIFEXITED(st) && WEXITSTATUS(st) == 0);
-                    TBLog2(@"[导入][zip] %@ 退出码=%d → %@", tool, st, unzipped ? @"成功" : @"失败");
+                    unzipped = (WEXITSTATUS(st) == 0);
+                    TBLog2(@"[导入][zip] %s 退出码=%d → %@", cands[i], WEXITSTATUS(st), unzipped ? @"成功" : @"失败");
+                } else {
+                    TBLog2(@"[导入][zip] 起不了 %s（沙盒/权限）", cands[i]);
                 }
             }
         } else {
@@ -867,13 +867,12 @@ static BOOL TBIsThemeLikeDirectory(NSString *dir) {
 
 /// 0.15.69：把 root 拥有的旧主题交给 mobile —— Filza 拷进来的文件整棵树属主是 root，
 /// App(mobile) 连 chmod 都做不了（errno=1/513）。这里用 posix_spawn 调系统 chown。
-static NSString *gChownBin;
 static int TBChownMobile(NSString *path) {
     if (path.length == 0) return -1;
     // 真机上 chown 常见位置：/usr/bin/chown（rootless jbroot）、/bin/chown、/usr/sbin/chown。
     // iSH 里是 /bin/chown → coreutils。逐个探测，用第一个可执行的那个。
     NSString *bin = nil;
-    for (NSString *c in @[TBInstallationPath(@"usr/bin/chown"), TBInstallationPath(@"bin/chown"), @"/usr/bin/chown", @"/bin/chown", @"/usr/sbin/chown",
+    for (NSString *c in @[@"/usr/bin/chown", @"/bin/chown", @"/usr/sbin/chown",
                           @"/var/jb/usr/bin/chown", @"/var/jb/bin/chown"]) {
         if (access(c.fileSystemRepresentation, X_OK) == 0) { bin = c; break; }
     }
@@ -908,6 +907,7 @@ static int TBChownMobile(NSString *path) {
 }
 
 /// 递归 chown：先改目录本身，再遍历内容（目录大也够快，主题包几百个文件毫秒级）
+static NSString *gChownBin;
 static void TBRecursiveChownMobile(NSString *path) {
     int rc = TBChownMobile(path);
     TBLog2(@"[删除] chown bin=%@ -R mobile:mobile rc=%d %@", gChownBin ?: @"(未找到)", rc, path);

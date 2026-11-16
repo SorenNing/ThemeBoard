@@ -3,6 +3,7 @@
 
 @interface TBTableViewController ()
 @property (nonatomic, assign) UITableViewStyle style;
+@property (nonatomic, strong) UIView *bgView;
 @end
 
 @implementation TBTableViewController
@@ -21,9 +22,14 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.view.backgroundColor = [UIColor clearColor];
+    // 1) 背景：独立兄弟视图，铺满整页，永远在最底层
+    self.bgView = [[UIView alloc] initWithFrame:self.view.bounds];
+    self.bgView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.bgView.userInteractionEnabled = NO;
+    [self.view addSubview:self.bgView];
+    TBApplyPageBackground(self.bgView);
 
-    // Full-size transparent viewport preserves scrolling beneath the bars.
+    // 2) 表格：子视图，透明，压在背景之上
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:self.style];
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
     self.tableView.backgroundColor = [UIColor clearColor];
@@ -38,6 +44,9 @@
         [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
 }
+
+// 0.15.61：0.15.60 在这里给所有 cell 放开 clipsToBounds（配合「卡片按页面 16pt 外扩」的
+// 运行时 hack）。hack 已整体撤掉，这里也一并删除，恢复 UIKit 默认裁剪。
 
 - (UIRefreshControl *)refreshControl {
     return self.tableView.refreshControl;

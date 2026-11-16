@@ -7,10 +7,6 @@
 /// 若 /var/mobile/Documents 不可写（没越狱 / 被沙盒限制），自动回退到
 /// App 容器里的 Documents/ThemeBoard，保证功能可用。
 
-/// Physical install root resolved from this App, never an unrelated jbroot.
-NSString *TBInstallationRoot(void);
-NSString *TBInstallationPath(NSString *relativePath);
-
 NSString *TBThemeBoardRoot(void);
 NSString *TBThemesRoot(void);
 NSString *TBAssetsRoot(void);

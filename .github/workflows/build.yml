@@ -1,72 +1,23 @@
 name: build
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      package_arch:
-        description: 'Native package architecture (this request: arm64e RootHide only)'
-        required: true
-        type: choice
-        options:
-          - arm64e
-          - arm64
-          - both
-        default: arm64e
-      install_metal_toolchain:
-        description: 'Authorize MetalToolchain download for this manual build (Xcode 26+)'
-        required: false
-        type: boolean
-        default: false
-
-permissions:
-  contents: read
 
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
-      - name: Verify pinned Theseus sources
-        run: python3 tools/verify_theseus.py --root "$GITHUB_WORKSPACE"
 
       - name: Toolchain
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install MetalToolchain when explicitly authorized
-        if: ${{ inputs.install_metal_toolchain }}
-        run: xcodebuild -downloadComponent MetalToolchain
-
-      - name: Check Swift and Metal availability
-        run: |
-          xcrun --sdk iphoneos swiftc --version
-          xcrun --sdk iphoneos --find swift-stdlib-tool
-          if ! xcrun --sdk iphoneos metal --version; then
-            echo '::error::Metal compiler unavailable. For Xcode 26+, rerun this manual workflow with install_metal_toolchain explicitly enabled, or install MetalToolchain on the runner first.'
-            exit 1
-          fi
-          xcrun --sdk iphoneos --find metallib
-
-      - name: Build and verify signed packages
-        shell: bash
-        run: |
-          set -o pipefail
-          PACKAGE_ARCH="${{ inputs.package_arch }}" bash tools/ci-build.sh 2>&1 | tee themeboard-build.log
-
-      - name: Upload build evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: themeboard-build-evidence
-          path: |
-            themeboard-build.log
-            build/ci/verification.json
-            build/ci/*/verification.json
-            build/ci/*/signed-entitlements.plist
-          if-no-files-found: warn
+      - name: Build package
+        run: bash tools/ci-build.sh
 
       - name: Upload deb
         uses: actions/upload-artifact@v4

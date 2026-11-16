@@ -6,6 +6,9 @@ static const CGFloat kTBToastHeight     = 48.0;
 static const CGFloat kTBToastPadX       = 22.0;
 static const CGFloat kTBToastIconSize   = 14.0;
 static const CGFloat kTBToastIconGap    = 7.0;
+static const CGFloat kTBToastDockH      = 64.0;   // 与 TBRootController 的 dock 一致
+static const CGFloat kTBToastDockBottom = 34.0;   // 与 TBRootController 的 dock 下边距一致
+static const CGFloat kTBToastDockGap    = 44.0;   // 0.15.91：16→44，远离底部手势区（原来贴着底栏会干扰上滑返回/退出）
 
 static const NSTimeInterval kTBToastInDuration  = 0.32;
 static const CGFloat        kTBToastInDamping   = 0.78;
@@ -17,6 +20,8 @@ static TBToast *_gToast = nil;
 static NSInteger _gToastGen = 0;
 
 @interface TBToastView : UIView
+@property (nonatomic, strong) UIVisualEffectView *blur;
+@property (nonatomic, strong) UIView *fill;
 @property (nonatomic, strong) UILabel *label;
 @property (nonatomic, strong) UIImageView *icon;
 @property (nonatomic, assign) NSInteger gen;
@@ -26,8 +31,22 @@ static NSInteger _gToastGen = 0;
 
 - (instancetype)initWithText:(NSString *)text icon:(NSString *)iconName {
     if ((self = [super initWithFrame:CGRectZero])) {
-        TBApplyTheseusSurface(self, kTBToastHeight / 2.0, nil);
+        self.backgroundColor = [UIColor clearColor];
+        self.layer.cornerRadius = kTBToastHeight / 2.0;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+        self.clipsToBounds = YES;
         self.userInteractionEnabled = NO;   // 只有提示，不挡点击
+
+        self.blur = [[UIVisualEffectView alloc] initWithEffect:
+                     [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+        self.blur.userInteractionEnabled = NO;
+        [self addSubview:self.blur];
+
+        self.fill = [[UIView alloc] initWithFrame:CGRectZero];
+        self.fill.userInteractionEnabled = NO;
+        self.fill.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.58],
+                                                   [UIColor colorWithWhite:1 alpha:0.14]);
+        [self addSubview:self.fill];
 
         UIFont *font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
         CGSize ts = [text sizeWithAttributes:@{ NSFontAttributeName: font }];
@@ -59,8 +78,15 @@ static NSInteger _gToastGen = 0;
         [self addSubview:self.label];
 
         self.bounds = CGRectMake(0, 0, ceil(w), kTBToastHeight);   // 宽度只由内容决定
+        TBApplyRim(self, 0.55);
     }
     return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.blur.frame = self.bounds;
+    self.fill.frame = self.bounds;
 }
 
 @end

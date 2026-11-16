@@ -43,38 +43,22 @@ static const CGFloat        kTBCloseDamping   = 0.90;
 static const NSTimeInterval kTBSettleDuration = 0.34;
 static const CGFloat        kTBSettleDamping  = 0.88;
 
-@interface TBSheetGlassView : UIView
-@property (nonatomic, strong) UIView *surface;
-@end
-
-@implementation TBSheetGlassView
-- (instancetype)initWithFrame:(CGRect)frame {
-    if ((self = [super initWithFrame:frame])) {
-        TBApplyTheseusSurface(self, kTBSheetRadius, nil);
-        _surface = self.subviews.firstObject;
-    }
-    return self;
-}
-
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    // 材质底部圆角延伸到屏外，保留抽屉仅顶部圆角与原有内容/命中区域。
-    // 宿主不裁切，顶部光学外缘仍可完整绘制；根视图负责屏幕边界裁切。
-    self.surface.frame = CGRectMake(0, 0, CGRectGetWidth(self.bounds),
-                                    CGRectGetHeight(self.bounds) + kTBSheetRadius);
-}
-@end
-
 #pragma mark - 同款玻璃按钮
 
-/// Theseus regular 按钮：保留圆角 13、高 44、16 号半粗和危险操作红字。
+/// 和顶部工具条那三个按钮完全同款：圆角 13、高 44、16 号半粗、白色玻璃底 + 细白边
 static void TBApplyToolbarGlass(UIButton *b, BOOL danger) {
-    if (!b) return;
     b.translatesAutoresizingMaskIntoConstraints = YES;   // 抽屉里走手动布局
     b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [b setTitleColor:(danger ? [UIColor systemRedColor] : [UIColor labelColor])
             forState:UIControlStateNormal];
-    TBApplyTheseusSurface(b, 13.0, nil);
+    b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                       [UIColor colorWithWhite:1 alpha:0.14]);
+    b.layer.cornerRadius = 13;
+    b.layer.cornerCurve = kCACornerCurveContinuous;
+    b.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
+    b.layer.borderColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
+                                         [UIColor colorWithWhite:1 alpha:0.20]).CGColor;
+    TBApplyRim(b, 0.55);
 }
 
 @interface TBBottomSheetController () <UIGestureRecognizerDelegate, UIDocumentPickerDelegate>
@@ -85,6 +69,8 @@ static void TBApplyToolbarGlass(UIButton *b, BOOL danger) {
 // ---- 视图 ----
 @property (nonatomic, strong) UIView *dimView;
 @property (nonatomic, strong) UIView *sheet;
+@property (nonatomic, strong) UIView *sheetFillView;
+@property (nonatomic, strong) UIView *hairline;
 @property (nonatomic, strong) UIView *handle;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *hintLabel;
@@ -184,9 +170,30 @@ static void TBApplyToolbarGlass(UIButton *b, BOOL danger) {
     [self.dimView addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self
                                                                               action:@selector(dimTapped)]];
 
-    // 2) 抽屉本体：原版 Theseus regular，外缘由材质自身绘制
-    self.sheet = [[TBSheetGlassView alloc] initWithFrame:CGRectZero];
+    // 2) 抽屉本体：磨砂 + 半透明填充 + 顶部圆角
+    self.sheet = [[UIView alloc] initWithFrame:CGRectZero];
+    self.sheet.backgroundColor = [UIColor clearColor];
+    self.sheet.layer.cornerRadius = kTBSheetRadius;
+    self.sheet.layer.cornerCurve = kCACornerCurveContinuous;
+    self.sheet.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    self.sheet.clipsToBounds = YES;
     [self.view addSubview:self.sheet];
+
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:
+                                [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+    blur.frame = self.sheet.bounds;
+    blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    blur.userInteractionEnabled = NO;
+    [self.sheet addSubview:blur];
+
+    self.sheetFillView = [[UIView alloc] initWithFrame:self.sheet.bounds];
+    self.sheetFillView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.sheetFillView.userInteractionEnabled = NO;
+    [self.sheet addSubview:self.sheetFillView];
+
+    self.hairline = [[UIView alloc] initWithFrame:CGRectZero];
+    self.hairline.userInteractionEnabled = NO;
+    [self.sheet addSubview:self.hairline];
 
     // 3) 拖拽指示条
     self.handle = [[UIView alloc] initWithFrame:CGRectZero];
@@ -277,6 +284,10 @@ static void TBApplyToolbarGlass(UIButton *b, BOOL danger) {
 
 /// 深浅色切换时重新解一次动态色
 - (void)tb_refreshDynamicColors {
+    self.sheetFillView.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                                        [UIColor colorWithWhite:0.10 alpha:0.62]);
+    self.hairline.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
+                                                   [UIColor colorWithWhite:1 alpha:0.20]);
     self.handle.backgroundColor = TBDynamicColor([UIColor colorWithWhite:0 alpha:0.18],
                                                  [UIColor colorWithWhite:1 alpha:0.35]);
     for (UIButton *b in self.choiceButtons) TBApplyToolbarGlass(b, NO);
@@ -289,18 +300,28 @@ static void TBApplyToolbarGlass(UIButton *b, BOOL danger) {
     [self refreshState];
 }
 
-/// 主功能按钮：同尺寸 Theseus regular 材质，淡蓝着色配蓝字强调。
+/// 主功能按钮（应用主题 / 应用）：和其它按钮同款玻璃、同高同宽，
+/// 只用「蓝字 + 半粗」强调（位置也在正中间，一眼能看到）
 - (void)tb_stylePrimary:(UIButton *)b {
     if (!b || b.hidden) return;
     TBApplyToolbarGlass(b, NO);
-    TBApplyTheseusSurface(b, 13.0, [[UIColor systemBlueColor] colorWithAlphaComponent:0.16]);
     [b setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
 }
 
-/// 选中态：仅给 Theseus 材质着色，保留右侧对勾的状态语义。
+/// 选中态：亮一点的白玻璃 + 蓝色描边 + 右侧对勾
 - (void)tb_applySelectedLook:(UIButton *)b selected:(BOOL)selected check:(UIImageView *)check {
-    TBApplyTheseusSurface(b, 13.0,
-                          selected ? [[UIColor systemBlueColor] colorWithAlphaComponent:0.20] : nil);
+    if (selected) {
+        b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.88],
+                                           [UIColor colorWithWhite:1 alpha:0.26]);
+        b.layer.borderWidth = 2.0;
+        b.layer.borderColor = [UIColor systemBlueColor].CGColor;
+    } else {
+        b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                           [UIColor colorWithWhite:1 alpha:0.14]);
+        b.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
+        b.layer.borderColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
+                                             [UIColor colorWithWhite:1 alpha:0.20]).CGColor;
+    }
     check.hidden = !selected;
 }
 
@@ -344,6 +365,7 @@ static void TBApplyToolbarGlass(UIButton *b, BOOL danger) {
     //（不用 transform：frame + transform 混用是未定义行为）
     [self tb_applyFrame];
     self.dimView.alpha = [self dimAlphaForOffset:self.offset];
+    self.hairline.frame = CGRectMake(0, 0, W, 1.0 / [UIScreen mainScreen].scale);
 }
 
 #pragma mark - 几何（底边恒定贴屏底）
@@ -637,9 +659,9 @@ static NSArray<NSArray<NSString *> *> *TBAssetKindTable(void) {
     [self.view setNeedsLayout];
 }
 
-/// 「开」状态：Theseus 材质内淡蓝着色 + 蓝字。
+/// 「开」状态的玻璃按钮：淡蓝底 + 蓝字（不用描边，和选中态区分）
 - (void)tb_styleFxOn:(UIButton *)b {
-    TBApplyTheseusSurface(b, 13.0, [[UIColor systemBlueColor] colorWithAlphaComponent:0.16]);
+    b.backgroundColor = [[UIColor systemBlueColor] colorWithAlphaComponent:0.16];
     [b setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
 }
 

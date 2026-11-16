@@ -1,6 +1,5 @@
 #import "TBPanelController.h"
 #import "TBGlass.h"
-#import "TBTheseusMaterial.h"
 
 #pragma mark - 玻璃面板基类（遮罩 + 卡片 + 键盘避让 + 自绘淡入淡出）
 
@@ -26,10 +25,35 @@ void TBLog2(NSString *fmt, ...) {
     else { @try { [fh seekToEndOfFile]; [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]]; } @catch (id e) {} [fh closeFile]; }
 }
 
-/// 原版 Theseus regular 按钮底层；文字、图标及点击仍由 UIButton 管理。
+/// 0.15.54：弹窗按钮统一套玻璃底（SystemThinMaterial + 白 0.55/0.12 + 1px 亮边 + 圆角 12），
+/// 与抽屉/工具条按钮同一套观感。以前「取消」是裸 UIButtonTypeSystem，在玻璃卡片上像个
+/// 悬浮的纯文字，几乎看不出是按钮。
 static void TBApplyPanelGlass(UIButton *b) {
-    if (!b) return;
-    TBApplyTheseusSurface(b, 12.0, nil);
+    if (!b || [b viewWithTag:2002]) return;
+    b.backgroundColor = [UIColor clearColor];
+    b.clipsToBounds = YES;
+    b.layer.cornerRadius = 12.0;
+    b.layer.cornerCurve = kCACornerCurveContinuous;
+    TBApplyRim(b, 0.45);                       // 1px 亮边
+
+    UIVisualEffectView *mat = [[UIVisualEffectView alloc] initWithEffect:
+        [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+    mat.tag = 2002;
+    mat.userInteractionEnabled = NO;
+    mat.frame = b.bounds;
+    mat.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [b insertSubview:mat atIndex:0];
+
+    UIView *fill = [[UIView alloc] init];
+    fill.tag = 2003;
+    fill.userInteractionEnabled = NO;
+    fill.frame = b.bounds;
+    fill.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    fill.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
+                                          [UIColor colorWithWhite:1 alpha:0.12]);
+    [b insertSubview:fill atIndex:1];
+
+    // 文字/图标要盖在玻璃之上（insertSubview:atIndex:0/1 只是插到最底，这里再兜一次）
     if (b.titleLabel) [b bringSubviewToFront:b.titleLabel];
     if (b.imageView) [b bringSubviewToFront:b.imageView];
 }
@@ -61,8 +85,27 @@ static void TBApplyPanelGlass(UIButton *b) {
                                                                          action:@selector(tb_dimTapped)];
     [_dimView addGestureRecognizer:tap];
 
-    _cardView = TBGlassCard(22.0);
+    _cardView = [[UIView alloc] initWithFrame:CGRectZero];
+    _cardView.layer.cornerRadius = 22;
+    _cardView.layer.cornerCurve = kCACornerCurveContinuous;
+    _cardView.clipsToBounds = YES;
+    _cardView.backgroundColor = [UIColor clearColor];
     [self.view addSubview:_cardView];
+
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:
+                                [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+    blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    blur.userInteractionEnabled = NO;
+    [_cardView addSubview:blur];
+
+    UIView *fill = [[UIView alloc] initWithFrame:CGRectZero];
+    fill.tag = 2001;
+    fill.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    fill.userInteractionEnabled = NO;
+    fill.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.60],
+                                          [UIColor colorWithWhite:0.10 alpha:0.62]);
+    [_cardView addSubview:fill];
+    TBApplyRim(_cardView, 0.55);
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(tb_keyboardWillChange:)
@@ -172,6 +215,8 @@ static void TBApplyPanelGlass(UIButton *b) {
 
     CGRect card = CGRectMake(round((b.size.width - w) / 2.0), round(top), round(w), round(h));
     self.cardView.frame = card;
+    UIView *fill = [self.cardView viewWithTag:2001];
+    fill.frame = self.cardView.bounds;
     [self tb_layoutCardContent:card];
 }
 
@@ -241,7 +286,11 @@ static CGFloat TBTextHeight(NSString *text, UIFont *font, CGFloat width) {
         b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
         [b setTitle:self.optionTitles[i] forState:UIControlStateNormal];
         [b setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-        TBApplyTheseusSurface(b, 13.0, nil);
+        b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                           [UIColor colorWithWhite:1 alpha:0.14]);
+        b.layer.cornerRadius = 13;
+        b.layer.cornerCurve = kCACornerCurveContinuous;
+        TBApplyRim(b, 0.55);
         [b addTarget:self action:@selector(tb_optionTapped:) forControlEvents:UIControlEventTouchUpInside];
         [self.cardView addSubview:b];
         [self.buttons addObject:b];
@@ -356,7 +405,11 @@ static CGFloat TBTextHeight(NSString *text, UIFont *font, CGFloat width) {
     [self.okButton setTitle:self.doneTitle forState:UIControlStateNormal];
     self.okButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [self.okButton setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-    TBApplyTheseusSurface(self.okButton, 13.0, nil);
+    self.okButton.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                                   [UIColor colorWithWhite:1 alpha:0.14]);
+    self.okButton.layer.cornerRadius = 13;
+    self.okButton.layer.cornerCurve = kCACornerCurveContinuous;
+    TBApplyRim(self.okButton, 0.55);
     [self.okButton addTarget:self action:@selector(tb_okTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.cardView addSubview:self.okButton];
 }
@@ -450,9 +503,8 @@ static CGFloat TBTextHeight(NSString *text, UIFont *font, CGFloat width) {
     self.confirmButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [self.confirmButton setTitleColor:(self.destructive ? [UIColor systemRedColor] : [UIColor labelColor])
                               forState:UIControlStateNormal];
-    // 原版 Theseus 材质内着色；危险操作仍为中性底、红字。
-    TBApplyTheseusSurface(self.confirmButton, 12.0,
-                          self.destructive ? nil : [[UIColor systemBlueColor] colorWithAlphaComponent:0.16]);
+    // 0.15.54：确认按钮统一套玻璃底（保留「蓝/红字强调」的标题色）
+    TBApplyPanelGlass(self.confirmButton);
     [self.confirmButton setTitleColor:(self.destructive ? [UIColor systemRedColor]
                                                        : [UIColor systemBlueColor])
                               forState:UIControlStateNormal];
@@ -547,7 +599,7 @@ void TBPresentConfirm(UIViewController *host, NSString *title, NSString *message
 @property (nonatomic, strong) UILabel *descLabel;
 @property (nonatomic, strong) UILabel *fieldCaption;   // 「半径（0–30）」
 @property (nonatomic, strong) UITextField *field;
-@property (nonatomic, strong) TBTheseusSlider *slider;
+@property (nonatomic, strong) UISlider *slider;
 @property (nonatomic, strong) UILabel *percentLabel;
 @property (nonatomic, strong) UIButton *cancelButton;
 @property (nonatomic, strong) UIButton *okButton;
@@ -606,14 +658,20 @@ static NSString *TBRadiusText(double v) {
     self.field.textAlignment = NSTextAlignmentCenter;
     self.field.font = [UIFont monospacedDigitSystemFontOfSize:16 weight:UIFontWeightMedium];
     self.field.textColor = [UIColor labelColor];
-    TBApplyTheseusSurface(self.field, 9.0, nil);
+    self.field.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.72],
+                                                [UIColor colorWithWhite:1 alpha:0.18]);
+    self.field.layer.cornerRadius = 9;
+    self.field.layer.cornerCurve = kCACornerCurveContinuous;
+    self.field.layer.borderWidth = 1.0 / [UIScreen mainScreen].scale;
+    self.field.layer.borderColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.60],
+                                                  [UIColor colorWithWhite:1 alpha:0.24]).CGColor;
     self.field.text = TBRadiusText(self.value);
     self.field.delegate = self;
     self.field.inputAccessoryView = nil;
     [self.field addTarget:self action:@selector(tb_fieldChanged:) forControlEvents:UIControlEventEditingChanged];
     [self.cardView addSubview:self.field];
 
-    self.slider = [[TBTheseusSlider alloc] initWithFrame:CGRectZero];
+    self.slider = [[UISlider alloc] initWithFrame:CGRectZero];
     self.slider.minimumValue = 0.0;
     self.slider.maximumValue = 30.0;
     self.slider.value = (float)self.value;
@@ -632,19 +690,25 @@ static NSString *TBRadiusText(double v) {
     [self.cancelButton setTitle:@"取消" forState:UIControlStateNormal];
     self.cancelButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [self.cancelButton setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-    TBApplyTheseusSurface(self.cancelButton, 13.0, nil);
+    self.cancelButton.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
+                                                       [UIColor colorWithWhite:1 alpha:0.14]);
+    self.cancelButton.layer.cornerRadius = 13;
+    self.cancelButton.layer.cornerCurve = kCACornerCurveContinuous;
+    TBApplyRim(self.cancelButton, 0.55);
     [self.cancelButton addTarget:self action:@selector(tb_cancelTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.cardView addSubview:self.cancelButton];
 
     self.okButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.okButton setTitle:@"确定" forState:UIControlStateNormal];
     self.okButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
-    [self.okButton setTitleColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
-    TBApplyTheseusSurface(self.okButton, 13.0, [[UIColor systemBlueColor] colorWithAlphaComponent:0.16]);
+    [self.okButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self.okButton.backgroundColor = [UIColor systemBlueColor];
+    self.okButton.layer.cornerRadius = 13;
+    self.okButton.layer.cornerCurve = kCACornerCurveContinuous;
     [self.okButton addTarget:self action:@selector(tb_okTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.cardView addSubview:self.okButton];
 
-    // 兜底：把所有内容视图提到 Theseus 材质之上，保留输入与点击层级。
+    // 兜底：把所有内容视图提到最上层（blur / fill 都在 cardView 里，避免被盖住看不到）
     for (UIView *v in @[self.titleLabel, self.descLabel, self.fieldCaption, self.field,
                         self.slider, self.percentLabel, self.cancelButton, self.okButton]) {
         [self.cardView bringSubviewToFront:v];
@@ -670,7 +734,7 @@ static NSString *TBRadiusText(double v) {
     self.percentLabel.text = [NSString stringWithFormat:@"≈ 图标宽度的 %.2f%%", pct];
 }
 
-- (void)tb_sliderChanged:(TBTheseusSlider *)s {
+- (void)tb_sliderChanged:(UISlider *)s {
     double v = round((double)s.value * 100.0) / 100.0;
     self.value = v;
     self.field.text = TBRadiusText(v);       // 拖滑块 → 输入框实时更新

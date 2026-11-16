@@ -89,10 +89,13 @@ static NSString *TBReadLogLossy(NSString *path) {
     self.table.rowHeight = 52;
     self.table.estimatedSectionHeaderHeight = 24;
     TBGlassTable(self.table);
+    TBSetPageBackground(self);
     [self.view addSubview:self.table];
 
     self.navigationItem.rightBarButtonItem =
-        TBGlassNavigationItem(@"刷新", nil, self, @selector(refresh));
+        [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"]
+                                         style:UIBarButtonItemStylePlain
+                                        target:self action:@selector(refresh)];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(runtimeChanged:) name:TBEngineRuntimeStateDidChangeNotification object:nil];
     [self refresh];
 }
@@ -196,7 +199,10 @@ static NSString *TBReadLogLossy(NSString *path) {
 
 - (UITableViewCell *)tableView:(UITableView *)t cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-    TBInstallTheseusCellSurface(cell, 12);
+    cell.backgroundColor = [UIColor clearColor];
+    cell.contentView.backgroundColor = [UIColor clearColor];
+    cell.backgroundView = TBGlassCellBG(12);
+    cell.selectedBackgroundView = nil;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
@@ -304,7 +310,11 @@ static NSString *TBReadLogLossy(NSString *path) {
     [b setTitle:@" 日志目录" forState:UIControlStateNormal];
     [b setImage:[UIImage systemImageNamed:@"folder"] forState:UIControlStateNormal];
     b.tintColor = [UIColor secondaryLabelColor];
-    TBApplyTheseusSurface(b, 14, nil);
+    b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
+                                       [UIColor colorWithWhite:1 alpha:0.12]);
+    b.layer.cornerRadius = 14;
+    b.layer.cornerCurve = kCACornerCurveContinuous;
+    TBApplyRim(b, 0.40);
     [b addTarget:self action:@selector(openLogFolder) forControlEvents:UIControlEventTouchUpInside];
     [v addSubview:b];
     return v;

@@ -1,53 +1,94 @@
 #import "TBGlass.h"
-#import "TBTheseusMaterial.h"
 #import <objc/runtime.h>
 
-@interface TBGlassCardView : UIView
-@property (nonatomic, strong) TBTheseusSurface *surface;
+// 前置声明（这些函数定义在文件后半部分，视图子类要用）
+static UIColor *TBPageTopColor(void);
+static UIColor *TBPageBottomColor(void);
+static UIColor *TBFillColor(void);
+static UIColor *TBRimColor(CGFloat alpha);
+void TBApplyRim(UIView *v, CGFloat alpha);
+
+#pragma mark - 动态色视图（深浅色切换即时生效）
+
+@interface TBGradientView : UIView
 @end
-@implementation TBGlassCardView
+@implementation TBGradientView {
+    CAGradientLayer *_g;
+    NSArray<UIView *> *_blobs;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        _g = [CAGradientLayer layer];
+        _g.startPoint = CGPointMake(0, 0);
+        _g.endPoint = CGPointMake(1, 1);
+        [self.layer addSublayer:_g];
+
+        NSMutableArray *b = [NSMutableArray array];
+        for (int i = 0; i < 3; i++) {
+            UIView *dot = [[UIView alloc] initWithFrame:CGRectZero];
+            dot.userInteractionEnabled = NO;
+            dot.layer.cornerRadius = 220;
+            dot.autoresizingMask = UIViewAutoresizingNone;
+            [self addSubview:dot];
+            [b addObject:dot];
+        }
+        _blobs = b;
+        [self tb_update];
+    }
+    return self;
+}
+
+- (void)tb_update {
+    _g.colors = @[ (id)TBPageTopColor().CGColor, (id)TBPageBottomColor().CGColor ];
+
+    // 三个柔光斑（沿用旧版配色）
+    NSArray *specs = @[ @[@(-0.15), @(-0.05), @(0.98), @(0.78), @(0.62)],
+                        @[@( 0.55), @( 0.30), @(0.62), @(0.86), @(0.95)],
+                        @[@( 0.15), @( 0.55), @(0.55), @(0.72), @(1.00)] ];
+    for (NSUInteger i = 0; i < _blobs.count; i++) {
+        NSArray *sp = specs[i];
+        UIView *dot = _blobs[i];
+        dot.backgroundColor = TBDynamicColor(
+            [UIColor colorWithRed:[sp[2] doubleValue] green:[sp[3] doubleValue] blue:[sp[4] doubleValue] alpha:0.22],
+            [UIColor colorWithRed:[sp[2] doubleValue] green:[sp[3] doubleValue] blue:[sp[4] doubleValue] alpha:0.14]);
+        dot.tag = 1000 + (NSInteger)i;
+    }
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)prev {
+    [super traitCollectionDidChange:prev];
+    [self tb_update];
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
-    self.surface.frame = self.bounds;
-    self.opaque = NO;
-    // Keep each card rim uncut. The full-page scroll view owns page clipping.
-    for (UIView *ancestor = self.superview; ancestor; ancestor = ancestor.superview) {
-        if ([ancestor isKindOfClass:[UIScrollView class]]) break;
-        ancestor.clipsToBounds = NO;
-        if ([ancestor isKindOfClass:[UITableViewCell class]] ||
-            [ancestor isKindOfClass:[UICollectionViewCell class]]) break;
+    _g.frame = self.bounds;
+    CGFloat W = self.bounds.size.width, H = self.bounds.size.height;
+    NSArray *specs = @[ @[@(-0.15), @(-0.05)], @[@(0.55), @(0.30)], @[@(0.15), @(0.55)] ];
+    for (NSUInteger i = 0; i < _blobs.count; i++) {
+        CGFloat x = [specs[i][0] doubleValue] * W;
+        CGFloat y = [specs[i][1] doubleValue] * H;
+        _blobs[i].frame = CGRectMake(x - 220, y - 220, 440, 440);
     }
-    // A table/collection background is a sibling of its labels and controls.
-    // Exclude the whole cell instead of sampling its foreground into the glass.
-    UIView *exclusion = self;
-    for (UIView *v = self.superview; v; v = v.superview) {
-        if ([v isKindOfClass:[UITableViewCell class]] ||
-            [v isKindOfClass:[UICollectionViewCell class]]) { exclusion = v; break; }
-    }
-    if (self.surface.captureExclusion != exclusion) self.surface.captureExclusion = exclusion;
 }
 @end
 
-static const void *kTBTheseusSurfaceKey = &kTBTheseusSurfaceKey;
-
-void TBApplyTheseusSurface(UIView *host, CGFloat radius, UIColor *tint) {
-    if (!host) return;
-    TBTheseusSurface *surface = objc_getAssociatedObject(host, kTBTheseusSurfaceKey);
-    if (!surface) {
-        surface = [[TBTheseusSurface alloc] initWithFrame:host.bounds];
-        surface.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        surface.captureExclusion = host;
-        [host insertSubview:surface atIndex:0];
-        objc_setAssociatedObject(host, kTBTheseusSurfaceKey, surface, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    host.opaque = NO;
-    host.backgroundColor = [UIColor clearColor];
-    host.layer.borderWidth = 0;
-    host.layer.cornerRadius = radius;
-    host.clipsToBounds = NO;
-    surface.cornerRadius = radius;
-    surface.surfaceTint = tint;
+@interface TBGlassCardView : UIView
+@property (nonatomic, strong) UIView *fill;
+@property (nonatomic, strong) UIView *hl;
+@end
+@implementation TBGlassCardView
+- (void)traitCollectionDidChange:(UITraitCollection *)prev {
+    [super traitCollectionDidChange:prev];
+    [self tb_refresh];
 }
+- (void)tb_refresh {
+    self.fill.backgroundColor = TBFillColor();
+    TBApplyRim(self, 0.92);
+}
+@end
+
+
 
 UIColor *TBDynamicColor(UIColor *light, UIColor *dark) {
     return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *t) {
@@ -56,10 +97,70 @@ UIColor *TBDynamicColor(UIColor *light, UIColor *dark) {
 }
 
 
+static UIColor *TBPageBaseColor(void) {
+    return TBDynamicColor([UIColor colorWithRed:0.870 green:0.858 blue:0.843 alpha:1],
+                           [UIColor colorWithRed:0.110 green:0.104 blue:0.120 alpha:1]);
+}
+
+// MarkFont 色板：浅色暖米白 / 深色 #1B191E
+static UIColor *TBPageTopColor(void) {
+    return TBDynamicColor([UIColor colorWithRed:0.898 green:0.886 blue:0.867 alpha:1],
+                           [UIColor colorWithRed:0.125 green:0.118 blue:0.137 alpha:1]);
+}
+static UIColor *TBPageBottomColor(void) {
+    return TBDynamicColor([UIColor colorWithRed:0.855 green:0.843 blue:0.827 alpha:1],
+                           [UIColor colorWithRed:0.098 green:0.090 blue:0.110 alpha:1]);
+}
+
+static UIColor *TBFillColor(void) {
+    return TBDynamicColor([UIColor colorWithWhite:1 alpha:0.34],
+                          [UIColor colorWithWhite:1 alpha:0.10]);
+}
+
+static UIColor *TBRimColor(CGFloat alpha) {
+    return TBDynamicColor([UIColor colorWithWhite:1 alpha:alpha],
+                          [UIColor colorWithWhite:1 alpha:alpha * 0.30]);
+}
+
+void TBApplyRim(UIView *v, CGFloat alpha) {
+    CGFloat scale = [UIScreen mainScreen].scale;
+    v.layer.borderWidth = 1.0 / scale;
+    v.layer.borderColor = TBRimColor(alpha).CGColor;
+}
+
 UIView *TBGlassCard(CGFloat radius) {
     TBGlassCardView *card = [[TBGlassCardView alloc] init];
-    TBApplyTheseusSurface(card, radius, nil);
-    card.surface = objc_getAssociatedObject(card, kTBTheseusSurfaceKey);
+    card.layer.cornerRadius = radius;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.clipsToBounds = YES;
+    card.backgroundColor = [UIColor clearColor];
+
+    UIVisualEffectView *blur =
+        [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+    blur.translatesAutoresizingMaskIntoConstraints = NO;
+    blur.userInteractionEnabled = NO;
+    [card insertSubview:blur atIndex:0];
+    [NSLayoutConstraint activateConstraints:@[
+        [blur.topAnchor constraintEqualToAnchor:card.topAnchor],
+        [blur.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [blur.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [blur.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+    ]];
+
+    UIView *fill = [[UIView alloc] init];
+    fill.translatesAutoresizingMaskIntoConstraints = NO;
+    fill.userInteractionEnabled = NO;
+    [card addSubview:fill];
+    [NSLayoutConstraint activateConstraints:@[
+        [fill.topAnchor constraintEqualToAnchor:card.topAnchor],
+        [fill.leadingAnchor constraintEqualToAnchor:card.leadingAnchor],
+        [fill.trailingAnchor constraintEqualToAnchor:card.trailingAnchor],
+        [fill.bottomAnchor constraintEqualToAnchor:card.bottomAnchor],
+    ]];
+
+    card.fill = fill;
+    card.hl = nil;
+    [card tb_refresh];
     return card;
 }
 
@@ -69,27 +170,95 @@ UIButton *TBGlassButton(NSString *title, BOOL danger) {
     [b setTitle:title forState:UIControlStateNormal];
     b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     [b setTitleColor:danger ? [UIColor systemRedColor] : [UIColor labelColor] forState:UIControlStateNormal];
-    TBApplyTheseusSurface(b, 24, nil);
+    b.backgroundColor = danger
+        ? TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55], [UIColor colorWithWhite:1 alpha:0.10])
+        : TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62], [UIColor colorWithWhite:1 alpha:0.14]);
+    b.layer.cornerRadius = 24;
+    b.layer.cornerCurve = kCACornerCurveContinuous;
+    TBApplyRim(b, 0.55);
     return b;
 }
 
-UIBarButtonItem *TBGlassNavigationItem(NSString *title, UIImage *image, id target, SEL action) {
-    UIButton *button = TBGlassButton(title ?: @"", NO);
-    button.translatesAutoresizingMaskIntoConstraints = YES;
-    button.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-    [button setImage:image forState:UIControlStateNormal];
-    button.tintColor = [UIColor labelColor];
-    CGSize textSize = title.length ? [title sizeWithAttributes:@{NSFontAttributeName:button.titleLabel.font}] : CGSizeZero;
-    button.frame = CGRectMake(0, 0, MAX(44, ceil(textSize.width) + (image ? 24 : 0) + 24), 36);
-    [button addTarget:target action:action forControlEvents:UIControlEventTouchUpInside];
-    button.accessibilityLabel = title;
-    TBApplyTheseusSurface(button, 18, nil);
-    return [[UIBarButtonItem alloc] initWithCustomView:button];
+static UIImage *TBPagePatternImage(void) {
+    static UIImage *light = nil, *dark = nil;
+    BOOL isDark = (UITraitCollection.currentTraitCollection.userInterfaceStyle == UIUserInterfaceStyleDark);
+    UIImage *cached = isDark ? dark : light;
+    if (cached) return cached;
+
+    CGSize size = [UIScreen mainScreen].bounds.size;
+    if (size.width < 1) size = CGSizeMake(390, 844);
+    UIGraphicsImageRendererFormat *fmt = [UIGraphicsImageRendererFormat defaultFormat];
+    fmt.opaque = YES;
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:size format:fmt];
+    UIImage *img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef c = ctx.CGContext;
+        UIColor *top = isDark ? [UIColor colorWithRed:0.125 green:0.118 blue:0.137 alpha:1]
+                              : [UIColor colorWithRed:0.898 green:0.886 blue:0.867 alpha:1];
+        UIColor *bot = isDark ? [UIColor colorWithRed:0.098 green:0.090 blue:0.110 alpha:1]
+                              : [UIColor colorWithRed:0.855 green:0.843 blue:0.827 alpha:1];
+        CGColorSpaceRef sp = CGColorSpaceCreateDeviceRGB();
+        CGFloat comps[8] = {0,0,0,0,0,0,0,0};
+        const CGFloat *t = CGColorGetComponents(top.CGColor);
+        const CGFloat *b = CGColorGetComponents(bot.CGColor);
+        comps[0]=t[0]; comps[1]=t[1]; comps[2]=t[2]; comps[3]=1;
+        comps[4]=b[0]; comps[5]=b[1]; comps[6]=b[2]; comps[7]=1;
+        CGGradientRef grad = CGGradientCreateWithColorComponents(sp, comps, NULL, 2);
+        CGContextDrawLinearGradient(c, grad, CGPointMake(0, 0), CGPointMake(size.width, size.height), 0);
+        CGGradientRelease(grad);
+        CGColorSpaceRelease(sp);
+
+        CGFloat alpha = isDark ? 0.18 : 0.30;
+        CGColorSpaceRef sp2 = CGColorSpaceCreateDeviceRGB();
+        NSArray *blobs = @[@[@(-0.15), @(-0.05), @(0.98), @(0.78), @(0.62)],
+                           @[@( 0.55), @( 0.30), @(0.62), @(0.86), @(0.95)],
+                           @[@( 0.15), @( 0.55), @(0.55), @(0.72), @(1.00)]];
+        for (NSArray *bl in blobs) {
+            CGPoint ctr = CGPointMake([bl[0] doubleValue] * size.width, [bl[1] doubleValue] * size.height);
+            UIColor *col = [UIColor colorWithRed:[bl[2] doubleValue] green:[bl[3] doubleValue]
+                                            blue:[bl[4] doubleValue] alpha:alpha];
+            UIColor *clear = [col colorWithAlphaComponent:0.0];
+            const CGFloat *cc = CGColorGetComponents(col.CGColor);
+            const CGFloat *c0 = CGColorGetComponents(clear.CGColor);
+            CGFloat comps[8] = { cc[0], cc[1], cc[2], cc[3], c0[0], c0[1], c0[2], 0.0 };
+            CGGradientRef grad2 = CGGradientCreateWithColorComponents(sp2, comps, NULL, 2);
+            CGContextDrawRadialGradient(c, grad2, ctr, 0, ctr, 260, 0);
+            CGGradientRelease(grad2);
+        }
+        CGColorSpaceRelease(sp2);
+    }];
+    if (isDark) dark = img; else light = img;
+    return img;
+}
+
+void TBApplyPageBackground(UIView *host) {
+    if (!host) return;
+    host.backgroundColor = TBPageBaseColor();
+}
+
+void TBSetPageBackground(UIViewController *vc) {
+    if (!vc) return;
+    vc.view.backgroundColor = TBPageBaseColor();
+    if ([vc isKindOfClass:[UITableViewController class]]) {
+        ((UITableViewController *)vc).tableView.backgroundColor = [UIColor clearColor];
+    }
+}
+
+void TBAttachFrostContainer(UIView *host) {
+    if (!host) return;
+    host.backgroundColor = TBPageBaseColor();
+}
+
+void TBAttachWindowFrost(UIWindow *window) {
+    if (!window) return;
+    window.backgroundColor = TBPageBaseColor();
+}
+
+void TBAttachFrost(UIView *host) {
+    host.backgroundColor = [UIColor systemGroupedBackgroundColor];
 }
 
 UIView *TBGlassCellBG(CGFloat inset) {
     UIView *bg = [[UIView alloc] init];
-    bg.opaque = NO;
     bg.backgroundColor = [UIColor clearColor];
     UIView *card = TBGlassCard(20);
     card.translatesAutoresizingMaskIntoConstraints = NO;
@@ -103,50 +272,72 @@ UIView *TBGlassCellBG(CGFloat inset) {
     return bg;
 }
 
-void TBPrepareTheseusCell(UITableViewCell *cell) {
-    cell.backgroundView = nil;
-    cell.selectedBackgroundView = nil;
-    cell.multipleSelectionBackgroundView = nil;
-    cell.automaticallyUpdatesBackgroundConfiguration = NO;
-    cell.backgroundConfiguration = [UIBackgroundConfiguration clearConfiguration];
-    cell.opaque = NO;
-    cell.backgroundColor = [UIColor clearColor];
-    cell.contentView.opaque = NO;
-    cell.contentView.backgroundColor = [UIColor clearColor];
-}
+// ── 按页面边距对齐的表格玻璃卡 ─────────────────────────────────────────────
+// .insetGrouped 的左右 section inset 不是固定值：不同屏幕宽度/系统上实测有 20 和 24
+// 两种。0.15.59 写死 "16 - 20 = -4" 时，在 24pt inset 的机器上卡片落在 24-4=20，
+// 比目标 16 多 4pt（这就是「部分页面卡片边距不对」的来源）。
+// 这里改成运行时把 cell 换算到 UITableView 坐标系，再反推卡片需要的外扩量，
+// 任何 section inset 下卡片边缘都精确落在 pageSide。
+@interface TBPageSideCellBG : UIView
+@property (nonatomic, strong) UIView *card;
+@property (nonatomic, assign) CGFloat pageSide;
+@end
 
-void TBInstallTheseusCellSurface(UITableViewCell *cell, CGFloat inset) {
-    TBPrepareTheseusCell(cell);
-    UIView *surface = TBGlassCellBG(inset);
-    surface.translatesAutoresizingMaskIntoConstraints = NO;
-    surface.userInteractionEnabled = NO;
-    [cell.contentView insertSubview:surface atIndex:0];
-    [NSLayoutConstraint activateConstraints:@[
-        [surface.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
-        [surface.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor],
-        [surface.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
-        [surface.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
-    ]];
+@implementation TBPageSideCellBG
+- (void)layoutSubviews {
+    [super layoutSubviews];
+
+    UIView *cell = self.superview;
+    while (cell && ![cell isKindOfClass:[UITableViewCell class]]) cell = cell.superview;
+    UITableView *tv = nil;
+    for (UIView *v = cell ?: self; v; v = v.superview) {
+        if ([v isKindOfClass:[UITableView class]]) { tv = (UITableView *)v; break; }
+    }
+
+    CGFloat left = 0.0, right = 0.0;
+    if (cell && tv) {
+        CGRect r = [cell convertRect:cell.bounds toView:tv];
+        left  = self.pageSide - CGRectGetMinX(r);
+        right = self.pageSide - (CGRectGetWidth(tv.bounds) - CGRectGetMaxX(r));
+    }
+    CGFloat w = MAX(0.0, CGRectGetWidth(self.bounds) - left - right);
+    self.card.frame = CGRectMake(left, 2.0, w, MAX(0.0, CGRectGetHeight(self.bounds) - 4.0));
+}
+@end
+
+UIView *TBGlassCellAtPageSide(CGFloat pageSide) {
+    TBPageSideCellBG *bg = [[TBPageSideCellBG alloc] init];
+    bg.backgroundColor = [UIColor clearColor];
+    bg.pageSide = pageSide;
+    bg.card = TBGlassCard(20);
+    [bg addSubview:bg.card];
+    return bg;
 }
 
 void TBGlassTable(UITableView *tv) {
-    // Theseus is the only cell surface; no table-wide decorative backing.
+    // 表格背景必须透明，否则它会盖住页面底色（默认是白色）
+    // 页面底色由 TBSetPageBackground / TBTableViewController 的背景视图提供
     tv.backgroundColor = [UIColor clearColor];
     tv.separatorStyle = UITableViewCellSeparatorStyleNone;
     tv.backgroundView = nil;
 }
 
-#pragma mark - 搜索框
+#pragma mark - 搜索框（0.15.59：恢复 100% 系统外观）
 
-void TBStyleSearchBarGlass(UISearchBar *searchBar) {
-    if (!searchBar) return;
-    static UIImage *emptyBackground;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ emptyBackground = [[UIImage alloc] init]; });
-    [searchBar setSearchFieldBackgroundImage:emptyBackground forState:UIControlStateNormal];
-    UITextField *field = searchBar.searchTextField;
-    field.borderStyle = UITextBorderStyleNone;
-    field.background = nil;
-    field.disabledBackground = nil;
-    TBApplyTheseusSurface(field, CGRectGetHeight(field.bounds) > 0 ? CGRectGetHeight(field.bounds) / 2 : 18, nil);
+// ★★ 0.15.59：用户实测结论是「没加玻璃时文字完全不动，加了玻璃就会动」。
+//   之前所有版本都在搜索框底下 / 内部插自绘玻璃视图（无论挂 sb.superview 还是
+//   sb 内部），都会扰动 UISearchBar 自己的布局与聚焦动画 → 文字视觉上「跟着动」。
+//   这一版把整条自绘链路彻底撤掉：不 swizzle layoutSubviews、不插任何视图、
+//   不动 backgroundImage / searchBarStyle / 内边距 / placeholder，
+//   UISearchBar 完全用系统默认外观。
+//
+//   注意：搜索态的退出逻辑（点空白 / 滑动 / 收键盘）不在这里，仍在各页面自己的
+//   tb_dismissSearch 里，保持原样。
+void TBStyleSearchBarGlass(UISearchBar *sb) {
+    (void)sb;   // 空实现：保留符号只为兼容旧调用点
+}
+
+void TBInstallGlassSearchBars(void) {
+    // 空实现：不再 hook UISearchBar，也不安装任何搜索框样式
+    NSLog(@"[ThemeBoard] 搜索框使用系统默认外观（自绘玻璃已停用）");
 }
