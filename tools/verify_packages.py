@@ -17,7 +17,7 @@ import sys
 import tarfile
 import tempfile
 
-from package import ARCHITECTURES, ICON, VERSION, read_control
+from package import ARCHITECTURES, ICONS, VERSION, read_control
 
 SUBTYPES = {"arm64": 0, "arm64e": 0x80000002}
 REQUIRED_ENTITLEMENTS = (
@@ -175,7 +175,7 @@ def verify_package(path, root, arch, kind, signatures):
     identity = "com.ning.themeboard" + (".engine" if kind == "engine" else "")
     for key, value in {"Package": identity, "Version": VERSION, "Architecture": deb_arch,
                        "Author": "Ning", "Maintainer": "Ning",
-                       "Icon": "file://" + prefix + "/" + ICON}.items():
+                       "Icon": "file://" + prefix + "/" + ICONS[kind]}.items():
         require(fields.get(key) == value, "Invalid " + key + " in " + path.name)
     require(original.get("Version") == VERSION, "Source control version must be " + VERSION)
     require(fields.get("Depends") == original.get("Depends") and fields.get("Depends"),
@@ -202,7 +202,7 @@ def verify_package(path, root, arch, kind, signatures):
     else:
         require(all(name.split("/")[0] in ("Applications", "Library", "usr")
                     for name in set(files) | directories), "RootHide payload has unexpected install roots")
-    icon = base + ICON
+    icon = base + ICONS[kind]
     require(files.get(icon) == (root / "app/Resources/Icon-large.png").read_bytes(),
             "Package icon must be the original Icon-large.png")
     app = base + "Applications/ThemeBoard.app" if kind == "app" else None
@@ -261,10 +261,17 @@ def verify_all(root, dist):
     expected = set()
     for arch, (deb_arch, _) in ARCHITECTURES.items():
         pair = []
+        owned_files, owned_directories = set(), set()
         for kind in ("app", "engine"):
             identity = "com.ning.themeboard" + (".engine" if kind == "engine" else "")
             name = identity + "_" + VERSION + "_" + deb_arch + ".deb"
             expected.add(name)
+            members = read_ar(dist / name)
+            files, _, directories = read_tar(members["data.tar.gz"])
+            collisions = (owned_files & set(files)) | (owned_files & directories) | (owned_directories & set(files))
+            require(not collisions, arch + ": co-install file ownership collision: " + ", ".join(sorted(collisions)))
+            owned_files.update(files)
+            owned_directories.update(directories)
             result = verify_package(dist / name, root, arch, kind, signatures)
             results.append(result)
             pair.append(result["engine_sha256"])

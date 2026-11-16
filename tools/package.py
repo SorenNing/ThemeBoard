@@ -19,7 +19,8 @@ from mkdeb import pack
 ARCHITECTURES = {"arm64": ("iphoneos-arm64", "/var/jb"),
                  "arm64e": ("iphoneos-arm64e", "")}
 VERSION = "1.51"
-ICON = "usr/share/icons/com.ning.themeboard.png"
+ICONS = {"app": "usr/share/icons/com.ning.themeboard.png",
+         "engine": "usr/share/icons/com.ning.themeboard.engine.png"}
 
 
 def require(condition, message):
@@ -106,7 +107,8 @@ def package(root, build, arch, dist):
                 "Package Author/Maintainer must be Ning")
         require(fields.get("Depends"), "Existing Depends must be preserved")
         fields["Architecture"] = deb_arch
-        fields["Icon"] = "file://" + prefix + "/" + ICON
+        package_icon = ICONS[kind]
+        fields["Icon"] = "file://" + prefix + "/" + package_icon
         stage = work / kind
         data, control = stage / "data", stage / "control"
         data.mkdir(parents=True)
@@ -129,7 +131,7 @@ def package(root, build, arch, dist):
             copy_file(engine, destination / engine.name)
             copy_file(root / "engine/ThemeBoardEngine.plist", destination / "ThemeBoardEngine.plist")
             (control / "postinst").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        copy_file(icon, payload / ICON)
+        copy_file(icon, payload / package_icon)
         fields["Installed-Size"] = str(installed_size(data))
         (control / "control").write_text(
             "".join(key + ": " + value + "\n" for key, value in fields.items()), encoding="utf-8")
