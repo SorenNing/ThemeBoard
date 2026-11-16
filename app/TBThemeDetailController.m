@@ -545,7 +545,10 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     self.collectionView.alwaysBounceVertical = YES;
     self.collectionView.dataSource = self;
     self.collectionView.delegate = self;
-    self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
+    // 视口本身避开导航栏/底栏，避免只调整内容后仍能滚入透明栏下。
+    self.collectionView.clipsToBounds = YES;
+    self.collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.collectionView.automaticallyAdjustsScrollIndicatorInsets = NO;
     // ★ 0.15.57：两种形态用各自的 reuse identifier，cell 从创建起就只会是那一种形态，
     //   不会出现「compact 卡被网格复用 / 网格卡被 compact 复用」→ 约束来回换 → 闪一下。
     [self.collectionView registerClass:[TBSquareCardCell class]
@@ -562,11 +565,14 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     [self.view addSubview:self.collectionView];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.collectionView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [self.collectionView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.collectionView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.collectionView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
     ]];
+    if (@available(iOS 15.0, *)) {
+        [self setContentScrollView:self.collectionView forEdge:NSDirectionalRectEdgeTop];
+    }
 }
 
 - (void)viewDidLayoutSubviews {

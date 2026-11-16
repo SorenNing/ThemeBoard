@@ -81,14 +81,14 @@
 
 - (void)relayout {
     if (!self.dock) return;
-    CGSize size = self.dock.intrinsicContentSize;
-    CGFloat width = MIN(size.width, MAX(0, self.view.bounds.size.width - 32));
-    CGFloat bottom = MAX(12, self.view.safeAreaInsets.bottom);
-    CGRect frame = CGRectMake((self.view.bounds.size.width - width) / 2,
-                              self.view.bounds.size.height - bottom - size.height,
-                              width, size.height);
+    CGFloat height = 64.0;
+    CGFloat width = MAX(0, self.view.bounds.size.width - 36.0);
+    CGFloat bottom = 34.0;
+    CGRect frame = CGRectMake(18.0,
+                              self.view.bounds.size.height - bottom - height,
+                              width, height);
     if (!CGRectEqualToRect(self.dock.frame, frame)) self.dock.frame = frame;
-    CGFloat extraBottom = MAX(0, size.height + bottom + 12 - self.view.safeAreaInsets.bottom);
+    CGFloat extraBottom = MAX(0, height + bottom + 12 - self.view.safeAreaInsets.bottom);
     for (UIViewController *vc in self.pages) {
         UIEdgeInsets insets = UIEdgeInsetsMake(0, 0, extraBottom, 0);
         if (!UIEdgeInsetsEqualToEdgeInsets(vc.additionalSafeAreaInsets, insets)) vc.additionalSafeAreaInsets = insets;

@@ -255,11 +255,14 @@ def verify_package(path, root, arch, kind, signatures):
             "engine_sha256": hashlib.sha256(files[engine]).hexdigest()}
 
 
-def verify_all(root, dist):
+def verify_all(root, dist, arch_filter="both"):
+    require(arch_filter in ("both", "arm64", "arm64e"), "Invalid architecture selection")
     signatures = sys.platform == "darwin"
     results = []
     expected = set()
     for arch, (deb_arch, _) in ARCHITECTURES.items():
+        if arch_filter != "both" and arch != arch_filter:
+            continue
         pair = []
         owned_files, owned_directories = set(), set()
         for kind in ("app", "engine"):
@@ -277,19 +280,21 @@ def verify_all(root, dist):
             pair.append(result["engine_sha256"])
         require(pair[0] == pair[1], arch + ": embedded engine differs from engine deb")
     require({p.name for p in dist.glob("*.deb")} == expected,
-            "dist must contain exactly the four verified App/engine debs")
-    return {"passed": True, "version": VERSION, "codesign_verified": signatures, "packages": results}
+            "dist must contain exactly the packages for selected architecture")
+    return {"passed": True, "version": VERSION, "selected_architecture": arch_filter,
+            "codesign_verified": signatures, "packages": results}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--dist", type=Path)
+    parser.add_argument("--arch", choices=("both", "arm64", "arm64e"), default="both")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
     try:
-        result = verify_all(root, (args.dist or root / "dist").resolve())
+        result = verify_all(root, (args.dist or root / "dist").resolve(), args.arch)
         rendered = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)

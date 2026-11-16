@@ -18,7 +18,7 @@ from mkdeb import pack
 
 ARCHITECTURES = {"arm64": ("iphoneos-arm64", "/var/jb"),
                  "arm64e": ("iphoneos-arm64e", "")}
-VERSION = "1.51"
+VERSION = "1.52"
 ICONS = {"app": "usr/share/icons/com.ning.themeboard.png",
          "engine": "usr/share/icons/com.ning.themeboard.engine.png"}
 

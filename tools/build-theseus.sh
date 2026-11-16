@@ -41,11 +41,16 @@ for required in app/TBTheseusDock.swift app/TBTheseusDock.h \
   [ -f "$required" ] || fail "Missing $required; both bridges, Bundle.module and complete vendor metadata are required."
 done
 
+# Keep Vendor immutable; build the audited presentation/capture compatibility copy.
+SWIFT_OUT="$OUT/theseus"
+STAGED="$SWIFT_OUT/Sources"
+python3 "$ROOT/tools/prepare_theseus_sources.py" --root "$ROOT" --output "$STAGED"
+
 # Bash 3.2-compatible arrays preserve paths with spaces; no SPM-generated header.
 SWIFT_SOURCES=()
 while IFS= read -r -d '' source; do
   SWIFT_SOURCES+=("$source")
-done < <(find "$VENDOR" -type f -name '*.swift' -print0)
+done < <(find "$STAGED" -type f -name '*.swift' -print0)
 [ "${#SWIFT_SOURCES[@]}" -gt 0 ] || fail "No vendored Theseus Swift sources found."
 shopt -s nullglob
 APP_SWIFT=("$ROOT"/app/*.swift)

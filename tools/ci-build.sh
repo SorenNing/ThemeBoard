@@ -1,6 +1,6 @@
 #!/bin/bash
-# macOS/Xcode: two native App+engine builds, four strictly verified debs.
-# arm64 ordinary rootless => /var/jb; arm64e RootHide => unprefixed payload.
+# macOS/Xcode: native App+engine; package_arch=arm64e builds only RootHide.
+# Ordinary arm64 remains available on explicit request, not in this run.
 set -euo pipefail
 export COPYFILE_DISABLE=1
 
@@ -26,7 +26,7 @@ xcrun --sdk iphoneos metal --version >/dev/null 2>&1 || \
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 VER="$(awk '/^Version:/{print $2}' control)"
 EV="$(awk '/^Version:/{print $2}' control.engine)"
-[ "$VER" = "1.51" ] && [ "$EV" = "$VER" ] || fail "Both source controls must use Version: 1.51."
+[ "$VER" = "1.52" ] && [ "$EV" = "$VER" ] || fail "Both source controls must use Version: 1.52."
 grep -q '@TB_PACKAGE_PREFIX@' postinst || fail "postinst must contain @TB_PACKAGE_PREFIX@."
 # Deployment target is independent of the Debian package version/architecture.
 VERY="15.0"
@@ -43,8 +43,16 @@ mkdir -p "$CI_OUT" "$ROOT/dist"
 rm -f "$ROOT"/dist/*.deb
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 echo "== SDK: $SDK"
+PACKAGE_ARCH="${PACKAGE_ARCH:-both}"
+case "$PACKAGE_ARCH" in
+  both) TARGET_ARCHES=(arm64 arm64e) ;;
+  arm64) TARGET_ARCHES=(arm64) ;;
+  arm64e) TARGET_ARCHES=(arm64e) ;;
+  *) fail "PACKAGE_ARCH must be both, arm64, or arm64e" ;;
+esac
 
-for TB_BUILD_ARCH in arm64 arm64e; do
+echo "== Native targets: ${TARGET_ARCHES[*]}"
+for TB_BUILD_ARCH in "${TARGET_ARCHES[@]}"; do
 export TB_BUILD_ARCH
 OUT="$CI_OUT/$TB_BUILD_ARCH"
 APP="$OUT/ThemeBoard.app"
@@ -160,6 +168,6 @@ python3 "$ROOT/tools/package.py" --root "$ROOT" --arch "$TB_BUILD_ARCH" --build-
 done
 
 python3 "$ROOT/tools/verify_packages.py" --root "$ROOT" \
-  --report "$CI_OUT/verification.json"
+  --arch "$PACKAGE_ARCH" --report "$CI_OUT/verification.json"
 ls -l "$ROOT"/dist/*.deb
 shasum -a 256 "$ROOT"/dist/*.deb

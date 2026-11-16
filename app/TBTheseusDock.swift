@@ -40,8 +40,9 @@ final class TBTheseusDock: UIView, UIGestureRecognizerDelegate {
         backgroundColor = .clear
         clipsToBounds = false
         accessibilityIdentifier = "themeboard.theseus.dock"
-        // Preserve the upstream 63pt height, 66pt preferred slots, optical
-        // material, colors, morphing, haptics, and accessibility defaults.
+        // ThemeBoard owns its established geometry; Theseus keeps the optics,
+        // gestures and springs. Do not shrink three tabs to the 198pt default.
+        bar.barHeight = 64
         bar.items = [
             TheseusTabBarItem(icon: UIImage(systemName: "square.grid.2x2.fill"), title: "主题"),
             TheseusTabBarItem(icon: UIImage(systemName: "slider.horizontal.3"), title: "设置"),
@@ -77,11 +78,16 @@ final class TBTheseusDock: UIView, UIGestureRecognizerDelegate {
         reselectTap = tap
     }
 
-    override var intrinsicContentSize: CGSize { bar.intrinsicContentSize }
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: 64)
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         if bar.frame != bounds { bar.frame = bounds }
+        let styleScale: CGFloat = TheseusSettings.shared.effectiveGlassStyle == .iOS26 ? 328.0 / 330.0 : 1
+        let itemWidth = bounds.width / max(CGFloat(bar.items.count) * styleScale, 1)
+        if abs(bar.preferredItemWidth - itemWidth) > 0.001 { bar.preferredItemWidth = itemWidth }
     }
 
     override func didMoveToWindow() {

@@ -9,6 +9,15 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
     self.surface.frame = self.bounds;
+    self.opaque = NO;
+    // The scroll viewport clips the page. Individual cells must not cut the
+    // glass's rounded rim/shadow into a rectangular row-sized strip.
+    for (UIView *ancestor = self.superview; ancestor; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:[UIScrollView class]]) break;
+        ancestor.clipsToBounds = NO;
+        if ([ancestor isKindOfClass:[UITableViewCell class]] ||
+            [ancestor isKindOfClass:[UICollectionViewCell class]]) break;
+    }
     // A table/collection background is a sibling of its labels and controls.
     // Exclude the whole cell instead of sampling its foreground into the glass.
     UIView *exclusion = self;
@@ -32,6 +41,7 @@ void TBApplyTheseusSurface(UIView *host, CGFloat radius, UIColor *tint) {
         [host insertSubview:surface atIndex:0];
         objc_setAssociatedObject(host, kTBTheseusSurfaceKey, surface, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    host.opaque = NO;
     host.backgroundColor = [UIColor clearColor];
     host.layer.borderWidth = 0;
     host.layer.cornerRadius = radius;

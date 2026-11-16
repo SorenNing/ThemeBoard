@@ -3,6 +3,15 @@ name: build
 on:
   workflow_dispatch:
     inputs:
+      package_arch:
+        description: 'Native package architecture (this request: arm64e RootHide only)'
+        required: true
+        type: choice
+        options:
+          - arm64e
+          - arm64
+          - both
+        default: arm64e
       install_metal_toolchain:
         description: 'Authorize MetalToolchain download for this manual build (Xcode 26+)'
         required: false
@@ -45,7 +54,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          bash tools/ci-build.sh 2>&1 | tee themeboard-build.log
+          PACKAGE_ARCH="${{ inputs.package_arch }}" bash tools/ci-build.sh 2>&1 | tee themeboard-build.log
 
       - name: Upload build evidence
         if: always()

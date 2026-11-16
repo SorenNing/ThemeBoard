@@ -34,15 +34,23 @@
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
     self.tableView.backgroundColor = [UIColor clearColor];
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+    // 安全区限定实际裁剪边界；不再叠加导航栏或浮动底栏的 contentInset。
+    self.tableView.clipsToBounds = YES;
+    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.tableView.automaticallyAdjustsScrollIndicatorInsets = NO;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     [self.view addSubview:self.tableView];
     [NSLayoutConstraint activateConstraints:@[
-        [self.tableView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.tableView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
     ]];
+    if (@available(iOS 15.0, *)) {
+        // 背景是首个子视图时，也让 UIKit 跟踪正确的表格来展开/收起搜索栏。
+        [self setContentScrollView:self.tableView forEdge:NSDirectionalRectEdgeTop];
+    }
 }
 
 // 0.15.61：0.15.60 在这里给所有 cell 放开 clipsToBounds（配合「卡片按页面 16pt 外扩」的
