@@ -1,20 +1,16 @@
 #!/bin/sh
-APP=/var/jb/Applications/ThemeBoard.app
-chmod -R 755 "$APP" 2>/dev/null || true
+# package.py expands this token: /var/jb for rootless, empty for RootHide.
+PREFIX='@TB_PACKAGE_PREFIX@'
+ROOT="${DPKG_ROOT:-}${PREFIX}"
+APP="$ROOT/Applications/ThemeBoard.app"
 chown -R mobile:mobile "$APP" 2>/dev/null || true
 
-# ---- 0.15.74：预建主题根目录并交给 mobile ----
-# App 运行在 mobile 下，无法在 <jbroot>/Library 里建目录（root:wheel 0755）。
-# 安装时以 root 身份建好，并 chown 给 mobile，之后 App 就能自由读写/删除。
-JBROOT=""
-for d in /var/containers/Bundle/Application/.jbroot-*; do
-  [ -d "$d" ] && JBROOT="$d" && break
-done
-[ -z "$JBROOT" ] && [ -d /var/jb ] && JBROOT="/var/jb"
-if [ -n "$JBROOT" ]; then
-  mkdir -p "$JBROOT/Library/ThemeBoard/Themes" "$JBROOT/Library/ThemeBoard/Assets" 2>/dev/null
-  chown -R mobile:mobile "$JBROOT/Library/ThemeBoard" 2>/dev/null
-  chmod -R 0755 "$JBROOT/Library/ThemeBoard" 2>/dev/null
-  echo "[ThemeBoard] 主题根 = $JBROOT/Library/ThemeBoard"
+# Always create the directory in this package's own installation root.
+# Do not pick an unrelated randomized .jbroot directory.
+mkdir -p "$ROOT/Library/ThemeBoard/Themes" "$ROOT/Library/ThemeBoard/Assets" 2>/dev/null
+chown -R mobile:mobile "$ROOT/Library/ThemeBoard" 2>/dev/null
+chmod -R 0755 "$ROOT/Library/ThemeBoard" 2>/dev/null
+if [ -x "$ROOT/usr/bin/uicache" ]; then
+  "$ROOT/usr/bin/uicache" -p "$APP" 2>/dev/null || true
 fi
 exit 0

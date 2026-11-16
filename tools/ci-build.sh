@@ -1,6 +1,6 @@
 #!/bin/bash
-# macOS/Xcode: complete arm64 iOS 15 App + original Theseus + optional arm64e engine.
-# Keep the existing /var/jb package layout and the two existing package identities.
+# macOS/Xcode: two native App+engine builds, four strictly verified debs.
+# arm64 ordinary rootless => /var/jb; arm64e RootHide => unprefixed payload.
 set -euo pipefail
 export COPYFILE_DISABLE=1
 
@@ -25,32 +25,43 @@ xcrun --sdk iphoneos metal --version >/dev/null 2>&1 || \
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 VER="$(awk '/^Version:/{print $2}' control)"
-ARCH="$(awk '/^Architecture:/{print $2}' control)"
-[ -n "$VER" ] && [ -n "$ARCH" ] || fail "control must specify Version and Architecture."
+EV="$(awk '/^Version:/{print $2}' control.engine)"
+[ "$VER" = "1.51" ] && [ "$EV" = "$VER" ] || fail "Both source controls must use Version: 1.51."
+grep -q '@TB_PACKAGE_PREFIX@' postinst || fail "postinst must contain @TB_PACKAGE_PREFIX@."
 # Deployment target is independent of the Debian package version/architecture.
 VERY="15.0"
 BUILD_NO="${GITHUB_RUN_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
-OUT="$ROOT/build/ci"
-APP="$OUT/ThemeBoard.app"
+CI_OUT="$ROOT/build/ci"
 shopt -s nullglob
 APP_SOURCES=("$ROOT"/app/*.m)
+ENGINE_SOURCES=("$ROOT"/engine/*.m)
 [ "${#APP_SOURCES[@]}" -gt 0 ] || fail "No App Objective-C sources found."
-rm -rf "$OUT"
-mkdir -p "$APP" "$OUT/objc"
+[ "${#ENGINE_SOURCES[@]}" -gt 0 ] || fail "The engine is required in both architectures."
+rm -rf "$CI_OUT"
+mkdir -p "$CI_OUT" "$ROOT/dist"
+# Never let an older or partial package set masquerade as this run's output.
+rm -f "$ROOT"/dist/*.deb
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 echo "== SDK: $SDK"
-echo "== Package: $VER / $ARCH; App: arm64 iOS $VERY"
+
+for TB_BUILD_ARCH in arm64 arm64e; do
+export TB_BUILD_ARCH
+OUT="$CI_OUT/$TB_BUILD_ARCH"
+APP="$OUT/ThemeBoard.app"
+mkdir -p "$APP" "$OUT/objc"
+echo "== Package: $VER; native $TB_BUILD_ARCH App + engine; iOS $VERY"
 
 # Every ObjC translation unit, including main.m, is linked by the Swift driver.
 OBJS=()
 for f in "${APP_SOURCES[@]}"; do
   o="$OUT/objc/$(basename "$f" .m).o"
   xcrun --sdk iphoneos clang -c -fobjc-arc -O2 -isysroot "$SDK" \
-    -target "arm64-apple-ios$VERY" -I"$ROOT/app" \
+    -target "$TB_BUILD_ARCH-apple-ios$VERY" -I"$ROOT/app" \
     -Wno-deprecated-declarations -o "$o" "$f"
   OBJS+=("$o")
 done
 SDK="$SDK" /bin/bash "$ROOT/tools/build-theseus.sh" "$OUT" "$APP"
-xcrun --sdk iphoneos swiftc -sdk "$SDK" -target "arm64-apple-ios$VERY" -O \
+xcrun --sdk iphoneos swiftc -sdk "$SDK" -target "$TB_BUILD_ARCH-apple-ios$VERY" -O \
   -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
   -framework UIKit -framework Foundation -framework CoreGraphics \
   -framework QuartzCore -framework ImageIO -framework UniformTypeIdentifiers \
@@ -59,7 +70,7 @@ xcrun --sdk iphoneos swiftc -sdk "$SDK" -target "arm64-apple-ios$VERY" -O \
   -Xlinker -rpath -Xlinker /usr/lib/swift \
   -Xlinker -rpath -Xlinker '@executable_path/Frameworks' \
   -o "$APP/ThemeBoard" "${OBJS[@]}" "$OUT/theseus/ThemeBoardGlass.o"
-xcrun --sdk iphoneos lipo -verify_arch arm64 "$APP/ThemeBoard"
+xcrun --sdk iphoneos lipo -verify_arch "$TB_BUILD_ARCH" "$APP/ThemeBoard"
 
 # Finish all bundle contents before its final signature is made.
 cp -R "$ROOT/app/Resources/." "$APP/"
@@ -72,34 +83,27 @@ if [ -d "$ROOT/demo-themes" ]; then
 fi
 file "$APP/ThemeBoard"
 
-# ---------- 引擎（arm64e）----------
-ENGINE_BUILT=0
-if compgen -G "engine/*.m" > /dev/null; then
-  mkdir -p "$OUT/engine"
-  EOBJS=()
-  for f in engine/*.m; do
-    o="$OUT/engine/$(basename "$f" .m).o"
-    xcrun --sdk iphoneos clang -c -fobjc-arc -O2 -isysroot "$SDK" \
-          -target "arm64e-apple-ios$VERY" -Iengine -Wno-deprecated-declarations -o "$o" "$f"
-    EOBJS+=("$o")
-  done
-  xcrun --sdk iphoneos clang -target "arm64e-apple-ios$VERY" -isysroot "$SDK" -dynamiclib \
-        -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
-        -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO \
-        -undefined dynamic_lookup \
-        -o "$OUT/engine/ThemeBoardEngine.dylib" "${EOBJS[@]}"
-  xcrun --sdk iphoneos lipo -verify_arch arm64e "$OUT/engine/ThemeBoardEngine.dylib"
-  codesign --force --sign - "$OUT/engine/ThemeBoardEngine.dylib"
-  codesign --verify --strict --verbose=2 "$OUT/engine/ThemeBoardEngine.dylib"
-  file "$OUT/engine/ThemeBoardEngine.dylib"
-  # 同时放进 App 包，供 App 内「自装引擎」使用
-  mkdir -p "$APP/Engine"
-  cp "$OUT/engine/ThemeBoardEngine.dylib" "$APP/Engine/"
-  cp engine/ThemeBoardEngine.plist "$APP/Engine/"
-  awk '/^Version:/{print $2}' control.engine > "$APP/Engine/version.txt"
-  codesign --verify --strict --verbose=2 "$APP/Engine/ThemeBoardEngine.dylib"
-  ENGINE_BUILT=1
-fi
+# Each App embeds the exact signed engine shipped in its same-arch engine deb.
+mkdir -p "$OUT/engine"
+EOBJS=()
+for f in "${ENGINE_SOURCES[@]}"; do
+  o="$OUT/engine/$(basename "$f" .m).o"
+  xcrun --sdk iphoneos clang -c -fobjc-arc -O2 -isysroot "$SDK" \
+    -target "$TB_BUILD_ARCH-apple-ios$VERY" -I"$ROOT/engine" \
+    -Wno-deprecated-declarations -o "$o" "$f"
+  EOBJS+=("$o")
+done
+xcrun --sdk iphoneos clang -target "$TB_BUILD_ARCH-apple-ios$VERY" -isysroot "$SDK" -dynamiclib \
+  -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
+  -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO \
+  -undefined dynamic_lookup -o "$OUT/engine/ThemeBoardEngine.dylib" "${EOBJS[@]}"
+xcrun --sdk iphoneos lipo -verify_arch "$TB_BUILD_ARCH" "$OUT/engine/ThemeBoardEngine.dylib"
+codesign --force --sign - "$OUT/engine/ThemeBoardEngine.dylib"
+codesign --verify --deep --strict --verbose=2 "$OUT/engine/ThemeBoardEngine.dylib"
+mkdir -p "$APP/Engine"
+cp "$OUT/engine/ThemeBoardEngine.dylib" "$APP/Engine/"
+cp "$ROOT/engine/ThemeBoardEngine.plist" "$APP/Engine/"
+printf '%s\n' "$EV" > "$APP/Engine/version.txt"
 
 # Scan the linked executable and nested code, copying only required runtime
 # libraries (including transitive back-deployment dylibs) from selected Xcode.
@@ -111,7 +115,14 @@ xcrun --sdk iphoneos swift-stdlib-tool --copy --verbose --platform iphoneos \
 SWIFT_DYLIB_COUNT=0
 # A nullglob loop also handles zero copies under macOS Bash 3.2 with set -u.
 for dylib in "$APP"/Frameworks/*.dylib; do
-  xcrun --sdk iphoneos lipo -verify_arch arm64 "$dylib"
+  xcrun --sdk iphoneos lipo -verify_arch "$TB_BUILD_ARCH" "$dylib"
+  # Xcode can copy fat runtimes. Select the real matching slice, never relabel
+  # an arm64 binary as arm64e. This invalidates its old signature: re-sign below.
+  runtime_archs="$(xcrun --sdk iphoneos lipo -archs "$dylib")"
+  if [ "$runtime_archs" != "$TB_BUILD_ARCH" ]; then
+    xcrun --sdk iphoneos lipo "$dylib" -thin "$TB_BUILD_ARCH" -output "$OUT/runtime-thin.dylib"
+    mv "$OUT/runtime-thin.dylib" "$dylib"
+  fi
   codesign --force --sign - "$dylib"
   codesign --verify --strict --verbose=2 "$dylib"
   SWIFT_DYLIB_COUNT=$((SWIFT_DYLIB_COUNT + 1))
@@ -141,56 +152,14 @@ PY
 for dylib in "$APP"/Frameworks/*.dylib; do
   codesign --verify --strict --verbose=2 "$dylib"
 done
-if [ "$ENGINE_BUILT" = "1" ]; then
-  codesign --verify --strict --verbose=2 "$APP/Engine/ThemeBoardEngine.dylib"
-fi
+codesign --verify --deep --strict --verbose=2 "$APP/Engine/ThemeBoardEngine.dylib"
 
-# ---------- 打包（保留现有 /var/jb 布局）----------
-STAGE="$OUT/stage"
-mkdir -p "$STAGE/var/jb/Applications" "$STAGE/DEBIAN"
-cp -R "$APP" "$STAGE/var/jb/Applications/"
-codesign --verify --deep --strict --verbose=2 "$STAGE/var/jb/Applications/ThemeBoard.app"
-if [ -d demo-themes ]; then
-  mkdir -p "$STAGE/var/jb/Library/Themes"
-  for theme in "$ROOT"/demo-themes/*.theme; do
-    cp -R "$theme" "$STAGE/var/jb/Library/Themes/"
-  done
-fi
-# 引擎单独打包，避免装 App 时触发 SpringBoard 重载
-ESTAGE="$OUT/estage"
-if [ "$ENGINE_BUILT" = "1" ]; then
-  mkdir -p "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries" "$ESTAGE/DEBIAN"
-  cp "$OUT/engine/ThemeBoardEngine.dylib" "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/"
-  cp engine/ThemeBoardEngine.plist "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/"
-  codesign --verify --strict --verbose=2 "$ESTAGE/var/jb/Library/MobileSubstrate/DynamicLibraries/ThemeBoardEngine.dylib"
-  cp control.engine "$ESTAGE/DEBIAN/control"
-  printf '#!/bin/sh\nexit 0\n' > "$ESTAGE/DEBIAN/postinst"
-  chmod 755 "$ESTAGE/DEBIAN/postinst"
-fi
-cp control "$STAGE/DEBIAN/control"
-cp postinst "$STAGE/DEBIAN/postinst"
-cp postrm  "$STAGE/DEBIAN/postrm"
-chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/postrm"
+# Python-only ar/tar packaging preserves the final signed file bytes. The
+# verifier reopens the FINAL debs and checks all headers, layouts and signatures.
+python3 "$ROOT/tools/package.py" --root "$ROOT" --arch "$TB_BUILD_ARCH" --build-dir "$OUT"
+done
 
-mkdir -p dist
-DEB="dist/com.ning.themeboard_${VER}_${ARCH}.deb"
-rm -f "$DEB"
-( cd "$STAGE" && tar --no-mac-metadata -czf "$OUT/data.tar.gz" ./var )
-( cd "$STAGE/DEBIAN" && tar --no-mac-metadata -czf "$OUT/control.tar.gz" ./control ./postinst ./postrm )
-echo "2.0" > "$OUT/debian-binary"
-python3 "$ROOT/tools/mkdeb.py" "$ROOT/$DEB" "$OUT"
-
-if [ "$ENGINE_BUILT" = "1" ]; then
-  EV=$(awk '/^Version:/{print $2}' control.engine)
-  EDEB="dist/com.ning.themeboard.engine_${EV}_iphoneos-arm64e.deb"
-  rm -f "$EDEB"
-  EWORK="$OUT/edeb"; rm -rf "$EWORK"; mkdir -p "$EWORK"
-  ( cd "$ESTAGE" && tar --no-mac-metadata -czf "$EWORK/data.tar.gz" ./var )
-  ( cd "$ESTAGE/DEBIAN" && tar --no-mac-metadata -czf "$EWORK/control.tar.gz" ./control ./postinst )
-  echo "2.0" > "$EWORK/debian-binary"
-  python3 "$ROOT/tools/mkdeb.py" "$ROOT/$EDEB" "$EWORK"
-  ls -l "$EDEB"
-fi
-
-ls -l "$DEB"
-echo "== SHA256"; shasum -a 256 "$DEB" dist/*.deb
+python3 "$ROOT/tools/verify_packages.py" --root "$ROOT" \
+  --report "$CI_OUT/verification.json"
+ls -l "$ROOT"/dist/*.deb
+shasum -a 256 "$ROOT"/dist/*.deb

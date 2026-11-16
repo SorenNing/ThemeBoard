@@ -12,32 +12,28 @@ static void TBPathLog(NSString *fmt, ...) {
 
 #pragma mark - 根目录
 
-/// 首选：真正的共享目录 /var/mobile/Documents/ThemeBoard（引擎也读这里）
-static NSString *const kTBCanonicalRoot = @"/var/mobile/Documents/ThemeBoard";
-
-/// rootless：jbroot 每台设备随机（/var/containers/Bundle/Application/.jbroot-XXXX），
-/// 但 <jbroot>/Library/ThemeBoard 这条路径形态固定 —— 用户指定的备选根。
-static NSString *TBJBRootThemeBoard(void) {
-    static NSString *r = nil;
+NSString *TBInstallationRoot(void) {
+    static NSString *root;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *appDir = @"/var/containers/Bundle/Application";
-        NSArray *kids = [fm contentsOfDirectoryAtPath:appDir error:NULL];
-        // ★ 0.15.72：不能再要求 Library/ThemeBoard 已存在（第一次跑时它还不存在 →
-        //   之前就因此一直"未找到 jbroot"，回退到容器 Documents 里去了）。
-        //   只要能找到一个 .jbroot-* 目录，就拼 <jbroot>/Library/ThemeBoard 返回。
-        for (NSString *d in kids) {
-            if (![d hasPrefix:@".jbroot-"]) continue;
-            NSString *jbroot = [appDir stringByAppendingPathComponent:d];
-            BOOL isDir = NO;
-            if (![fm fileExistsAtPath:jbroot isDirectory:&isDir] || !isDir) continue;
-            // Library 存在就用它；不存在也照样拼（后面 createDirectory withIntermediate 会建）
-            r = [jbroot stringByAppendingPathComponent:@"Library/ThemeBoard"];
-            break;
+        NSString *bundle = [NSBundle mainBundle].bundlePath.stringByResolvingSymlinksInPath;
+        NSString *suffix = @"/Applications/ThemeBoard.app";
+        if ([bundle hasSuffix:suffix]) {
+            root = [bundle substringToIndex:bundle.length - suffix.length];
+            if (!root.length) root = @"/";
+        } else {
+            root = @"/var/jb";
         }
     });
-    return r;
+    return root;
+}
+
+NSString *TBInstallationPath(NSString *relativePath) {
+    return [TBInstallationRoot() stringByAppendingPathComponent:relativePath];
+}
+
+static NSString *TBJBRootThemeBoard(void) {
+    return TBInstallationPath(@"Library/ThemeBoard");
 }
 
 static NSString *TBAppContainerRoot(void) {

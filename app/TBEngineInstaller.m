@@ -1,4 +1,5 @@
 #import "TBEngineInstaller.h"
+#import "TBPaths.h"
 #import <UIKit/UIKit.h>
 #import <spawn.h>
 #import <sys/wait.h>
@@ -54,7 +55,9 @@ static void TBRuntimeSetup(void) {
 @implementation TBEngineInstaller
 
 + (NSArray<NSString *> *)candidateDirs {
-    return @[@"/var/jb/Library/MobileSubstrate/DynamicLibraries",
+    return @[TBInstallationPath(@"Library/MobileSubstrate/DynamicLibraries"),
+             TBInstallationPath(@"usr/lib/TweakInject"),
+             @"/var/jb/Library/MobileSubstrate/DynamicLibraries",
              @"/Library/MobileSubstrate/DynamicLibraries",
              @"/var/jb/usr/lib/TweakInject",
              @"/usr/lib/TweakInject"];
@@ -172,7 +175,7 @@ static void TBRuntimeSetup(void) {
 }
 
 + (NSString *)helperPath {
-    for (NSString *p in @[@"/var/jb/usr/bin/themeboard-helper", @"/usr/bin/themeboard-helper"]) {
+    for (NSString *p in @[TBInstallationPath(@"usr/bin/themeboard-helper"), @"/var/jb/usr/bin/themeboard-helper", @"/usr/bin/themeboard-helper"]) {
         if ([[NSFileManager defaultManager] isExecutableFileAtPath:p]) return p;
     }
     return nil;
@@ -219,7 +222,12 @@ static void TBRuntimeSetup(void) {
 }
 
 + (BOOL)respring {
-    NSArray *candidates = @[@[@"/var/jb/usr/bin/sbreload", @[]],
+    NSArray *candidates = @[@[TBInstallationPath(@"usr/bin/sbreload"), @[]],
+                            @[TBInstallationPath(@"usr/bin/respring"), @[]],
+                            @[TBInstallationPath(@"usr/bin/jbctl"), @[@"respring"]],
+                            @[TBInstallationPath(@"usr/bin/killall"), @[@"-HUP", @"SpringBoard"]],
+                            @[TBInstallationPath(@"usr/bin/pkill"), @[@"-9", @"SpringBoard"]],
+                            @[@"/var/jb/usr/bin/sbreload", @[]],
                             @[@"/var/jb/usr/bin/respring", @[]],
                             @[@"/var/jb/usr/bin/jbctl", @[@"respring"]],
                             @[@"/var/jb/usr/bin/killall", @[@"-HUP", @"SpringBoard"]],

@@ -42,7 +42,22 @@ jobs:
           xcrun --sdk iphoneos --find metallib
 
       - name: Build and verify signed packages
-        run: bash tools/ci-build.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tools/ci-build.sh 2>&1 | tee themeboard-build.log
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: themeboard-build-evidence
+          path: |
+            themeboard-build.log
+            build/ci/verification.json
+            build/ci/*/verification.json
+            build/ci/*/signed-entitlements.plist
+          if-no-files-found: warn
 
       - name: Upload deb
         uses: actions/upload-artifact@v4

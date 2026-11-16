@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build all unmodified Theseus Swift + all app/*.swift + Bundle.module as one object.
 # Usage: bash tools/build-theseus.sh [output-directory [ThemeBoard.app-directory]]
+# TB_BUILD_ARCH=arm64|arm64e chooses the actual Swift target (default arm64).
 # Called by ci-build.sh; this helper does not link, sign, or package the app.
 set -euo pipefail
 
@@ -23,7 +24,12 @@ xcrun --sdk iphoneos metal --version >/dev/null 2>&1 || \
   fail "Metal compiler unavailable. Install the Xcode Metal Toolchain (on Xcode 26+: xcodebuild -downloadComponent MetalToolchain)."
 
 SDK="${SDK:-$(xcrun --sdk iphoneos --show-sdk-path)}"
-OUT="${1:-$ROOT/build/ci}"
+TB_BUILD_ARCH="${TB_BUILD_ARCH:-arm64}"
+case "$TB_BUILD_ARCH" in
+  arm64|arm64e) ;;
+  *) fail "TB_BUILD_ARCH must be arm64 or arm64e (no header architecture rewriting)." ;;
+esac
+OUT="${1:-$ROOT/build/ci/$TB_BUILD_ARCH}"
 APP="${2:-$OUT/ThemeBoard.app}"
 VENDOR="$ROOT/Vendor/Theseus/Sources/Theseus"
 PIN="71ca1c127a4e7fe3387361f160c4890dbd427f66"
@@ -57,7 +63,7 @@ mkdir -p "$SWIFT_OUT/metal" "$SWIFT_OUT/ModuleCache" "$BUNDLE" "$APP/Acknowledge
 
 # All vendor Swift, app Swift, and Bundle.module compile together. UIKit's ObjC
 # entry point remains app/main.m, so Swift must never synthesize its own main.
-xcrun --sdk iphoneos swiftc -sdk "$SDK" -target arm64-apple-ios15.0 \
+xcrun --sdk iphoneos swiftc -sdk "$SDK" -target "$TB_BUILD_ARCH-apple-ios15.0" \
   -swift-version 5 -parse-as-library -whole-module-optimization -O -emit-object \
   -module-name ThemeBoardGlass -module-cache-path "$SWIFT_OUT/ModuleCache" \
   "${SWIFT_SOURCES[@]}" -o "$SWIFT_OUT/ThemeBoardGlass.o"
