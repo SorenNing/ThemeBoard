@@ -1,35 +1,19 @@
-name: build-linux
+name: build-linux (unsupported)
 
 on:
-  push:
-    paths:
-      - '.github/workflows/build-linux.yml'
-      - 'tools/ci-linux-build.sh'
-      - 'engine/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  engine:
-    runs-on: ubuntu-22.04
+  unsupported:
+    # Keep dispatches on the same macOS runner family; do not start a Linux build.
+    runs-on: macos-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - name: 安装依赖
+      - name: Explain unsupported Linux and iSH builds
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl git make unzip xz-utils python3 dpkg-dev libtinfo5 || true
-
-      - name: 构建引擎
-        run: |
-          chmod +x tools/ci-linux-build.sh
-          bash tools/ci-linux-build.sh 2>&1 | tee build-linux.log
-
-      - name: 上传产物
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: engine-linux
-          path: |
-            build-linux.log
-            dist/*.deb
-          if-no-files-found: warn
+          echo '::error::ThemeBoard with original Theseus cannot be built on Linux/iSH: Apple Swift, the iPhoneOS SDK, the Metal compiler and Swift back-deployment runtime require macOS with full Xcode.'
+          echo 'Manually run .github/workflows/build.yml, or run sh tools/build-app.sh on macOS. This obsolete Linux entry point intentionally fails and produces no artifacts.'
+          exit 1

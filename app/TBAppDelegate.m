@@ -47,7 +47,7 @@ static TBThemeListController *TBFindThemeListController(UIViewController *vc, NS
 didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     // 0.15.59：搜索框恢复 100% 系统外观 —— 不再安装任何自绘玻璃
     self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    self.window.backgroundColor = [UIColor colorWithRed:0.870 green:0.858 blue:0.843 alpha:1];
+    self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
     self.window.rootViewController = [[TBRootController alloc] init];
     [self.window makeKeyAndVisible];
 

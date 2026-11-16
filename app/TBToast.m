@@ -20,8 +20,6 @@ static TBToast *_gToast = nil;
 static NSInteger _gToastGen = 0;
 
 @interface TBToastView : UIView
-@property (nonatomic, strong) UIVisualEffectView *blur;
-@property (nonatomic, strong) UIView *fill;
 @property (nonatomic, strong) UILabel *label;
 @property (nonatomic, strong) UIImageView *icon;
 @property (nonatomic, assign) NSInteger gen;
@@ -31,22 +29,8 @@ static NSInteger _gToastGen = 0;
 
 - (instancetype)initWithText:(NSString *)text icon:(NSString *)iconName {
     if ((self = [super initWithFrame:CGRectZero])) {
-        self.backgroundColor = [UIColor clearColor];
-        self.layer.cornerRadius = kTBToastHeight / 2.0;
-        self.layer.cornerCurve = kCACornerCurveContinuous;
-        self.clipsToBounds = YES;
+        TBApplyTheseusSurface(self, kTBToastHeight / 2.0, nil);
         self.userInteractionEnabled = NO;   // 只有提示，不挡点击
-
-        self.blur = [[UIVisualEffectView alloc] initWithEffect:
-                     [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
-        self.blur.userInteractionEnabled = NO;
-        [self addSubview:self.blur];
-
-        self.fill = [[UIView alloc] initWithFrame:CGRectZero];
-        self.fill.userInteractionEnabled = NO;
-        self.fill.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.58],
-                                                   [UIColor colorWithWhite:1 alpha:0.14]);
-        [self addSubview:self.fill];
 
         UIFont *font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
         CGSize ts = [text sizeWithAttributes:@{ NSFontAttributeName: font }];
@@ -78,15 +62,8 @@ static NSInteger _gToastGen = 0;
         [self addSubview:self.label];
 
         self.bounds = CGRectMake(0, 0, ceil(w), kTBToastHeight);   // 宽度只由内容决定
-        TBApplyRim(self, 0.55);
     }
     return self;
-}
-
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    self.blur.frame = self.bounds;
-    self.fill.frame = self.bounds;
 }
 
 @end

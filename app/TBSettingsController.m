@@ -3,6 +3,7 @@
 #import "TBPrefs.h"
 #import "TBThemeScanner.h"
 #import "TBGlass.h"
+#import "TBTheseusMaterial.h"
 #import "TBTableViewController.h"
 #import "TBEngineInstaller.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -166,7 +167,7 @@
         double cur = [TBPrefs doubleForKey:row[@"k"] defaultValue:[row[@"v"] doubleValue]];
         if (!(cur >= 0.0) || cur > 1.0) cur = [row[@"v"] doubleValue];
         cell.detailTextLabel.text = [NSString stringWithFormat:@"%.0f%%（0 = 不用玻璃层）", cur * 100.0];
-        UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(0, 0, 150, 32)];
+        TBTheseusSlider *sl = [[TBTheseusSlider alloc] initWithFrame:CGRectMake(0, 0, 150, 32)];
         sl.minimumValue = 0.0;
         sl.maximumValue = 1.0;
         sl.value = (float)cur;
@@ -180,7 +181,8 @@
         UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 88, 32)];
         tf.textAlignment = NSTextAlignmentRight;
         tf.keyboardType = UIKeyboardTypeDecimalPad;
-        tf.borderStyle = UITextBorderStyleRoundedRect;
+        tf.borderStyle = UITextBorderStyleNone;
+        TBApplyTheseusSurface(tf, 9, nil);
         tf.font = [UIFont monospacedDigitSystemFontOfSize:16 weight:UIFontWeightRegular];
         tf.text = [NSString stringWithFormat:@"%.2f",
                    [TBPrefs doubleForKey:row[@"k"] defaultValue:[row[@"v"] doubleValue]]];
@@ -189,13 +191,12 @@
         UIToolbar *bar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, 320, 44)];
         bar.items = @[ [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                                                                      target:nil action:nil],
-                       [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-                                                                     target:tf action:@selector(resignFirstResponder)] ];
+                       TBGlassNavigationItem(@"完成", nil, tf, @selector(resignFirstResponder)) ];
         tf.inputAccessoryView = bar;
         cell.accessoryView = tf;
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if (row[@"k"]) {
-        UISwitch *sw = [[UISwitch alloc] init];
+        TBTheseusSwitch *sw = [[TBTheseusSwitch alloc] init];
         sw.on = [TBPrefs boolForKey:row[@"k"] defaultValue:[row[@"v"] boolValue]];
         sw.tag = indexPath.section * 100 + indexPath.row;
         [sw addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];
@@ -226,7 +227,7 @@
     return cell;
 }
 
-- (void)switchChanged:(UISwitch *)sw {
+- (void)switchChanged:(TBTheseusSwitch *)sw {
     NSInteger section = sw.tag / 100, row = sw.tag % 100;
     NSDictionary *item = self.model[section][row];
     [TBPrefs setBool:sw.on forKey:item[@"k"]];
@@ -237,7 +238,7 @@
 }
 
 /// 滑块行（透明玻璃强度）：拖动即实时写入偏好 + 通知引擎
-- (void)sliderChanged:(UISlider *)sl {
+- (void)sliderChanged:(TBTheseusSlider *)sl {
     NSInteger section = sl.tag / 100, row = sl.tag % 100;
     if (section < 0 || section >= (NSInteger)self.model.count) return;
     if (row < 0 || row >= (NSInteger)self.model[section].count) return;

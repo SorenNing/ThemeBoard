@@ -93,9 +93,7 @@ static NSString *TBReadLogLossy(NSString *path) {
     [self.view addSubview:self.table];
 
     self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"]
-                                         style:UIBarButtonItemStylePlain
-                                        target:self action:@selector(refresh)];
+        TBGlassNavigationItem(@"刷新", nil, self, @selector(refresh));
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(runtimeChanged:) name:TBEngineRuntimeStateDidChangeNotification object:nil];
     [self refresh];
 }
@@ -310,11 +308,7 @@ static NSString *TBReadLogLossy(NSString *path) {
     [b setTitle:@" 日志目录" forState:UIControlStateNormal];
     [b setImage:[UIImage systemImageNamed:@"folder"] forState:UIControlStateNormal];
     b.tintColor = [UIColor secondaryLabelColor];
-    b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
-                                       [UIColor colorWithWhite:1 alpha:0.12]);
-    b.layer.cornerRadius = 14;
-    b.layer.cornerCurve = kCACornerCurveContinuous;
-    TBApplyRim(b, 0.40);
+    TBApplyTheseusSurface(b, 14, nil);
     [b addTarget:self action:@selector(openLogFolder) forControlEvents:UIControlEventTouchUpInside];
     [v addSubview:b];
     return v;

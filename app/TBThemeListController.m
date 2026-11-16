@@ -48,21 +48,11 @@ static UIView *TBFindSwipePullView(UIView *root, NSInteger depth) {
 static void TBPaintRedLabels(UIView *v, NSInteger depth);
 
 static void TBStyleSwipePullView(UIView *pull) {
-    CGFloat scale = [UIScreen mainScreen].scale;
     pull.backgroundColor = [UIColor clearColor];
     pull.layer.cornerRadius = 20;
-    pull.layer.cornerCurve = kCACornerCurveContinuous;
     pull.clipsToBounds = YES;
-
-    for (UIView *btn in pull.subviews) {
-        btn.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
-                                             [UIColor colorWithWhite:1 alpha:0.14]);
-        btn.layer.cornerRadius = 20;
-        btn.layer.cornerCurve = kCACornerCurveContinuous;
-        btn.clipsToBounds = YES;
-        btn.layer.borderWidth = 1.0 / scale;
-        btn.layer.borderColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.55],
-                                               [UIColor colorWithWhite:1 alpha:0.20]).CGColor;
+    for (UIView *btn in [pull.subviews copy]) {
+        TBApplyTheseusSurface(btn, 20, nil);
         TBPaintRedLabels(btn, 0);
     }
 }
@@ -127,6 +117,11 @@ static void tb_swipePullLayout(id self, SEL _cmd) {
     [TBPrefs setString:[TBThemeScanner containerThemesDir] forKey:@"ThemeRoot"];
     [TBPrefs synchronize];
     [self reload];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    TBStyleSearchBarGlass(self.search.searchBar);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -365,11 +360,7 @@ didPickDocumentAtURL:(NSURL *)url {
         b.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
         [b setTitleColor:(i == 2 ? [UIColor systemRedColor] : [UIColor labelColor])
                 forState:UIControlStateNormal];
-        b.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
-                                           [UIColor colorWithWhite:1 alpha:0.14]);
-        b.layer.cornerRadius = 13;
-        b.layer.cornerCurve = kCACornerCurveContinuous;
-        TBApplyRim(b, 0.55);
+        TBApplyTheseusSurface(b, 13, nil);
         b.tag = i;
         [all addObject:b];
     }
@@ -504,11 +495,7 @@ static const CGFloat kTBListHeaderInset = 32.0;
         [sort setImage:[UIImage systemImageNamed:@"arrow.up.arrow.down" withConfiguration:sc]
               forState:UIControlStateNormal];
         sort.tintColor = [UIColor labelColor];
-        sort.backgroundColor = TBDynamicColor([UIColor colorWithWhite:1 alpha:0.62],
-                                              [UIColor colorWithWhite:1 alpha:0.14]);
-        sort.layer.cornerRadius = 10;
-        sort.layer.cornerCurve = kCACornerCurveContinuous;
-        TBApplyRim(sort, 0.55);
+        TBApplyTheseusSurface(sort, 10, nil);
         sort.frame = CGRectMake(w - kTBListHeaderInset - 40.0, (h - 32.0) / 2.0 - 5.0, 40.0, 32.0);   // 0.15.60 起：上移 5pt，与分组标题文字视觉居中
         sort.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
         [sort addTarget:self action:@selector(sortTapped) forControlEvents:UIControlEventTouchUpInside];

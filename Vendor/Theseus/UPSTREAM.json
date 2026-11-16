@@ -1,0 +1,158 @@
+{
+  "repository": "https://github.com/valzevul/Theseus",
+  "ref": "master",
+  "commit": "71ca1c127a4e7fe3387361f160c4890dbd427f66",
+  "license": "Apache-2.0",
+  "copyright": "Copyright 2025 Vadim Drobinin",
+  "modifications": [],
+  "files": {
+    "LICENSE": {
+      "bytes": 10763,
+      "sha256": "8fc0715d615ed988ca4bf59edf6d539c0707297f82591dc2fae0171f625065ee"
+    },
+    "NOTICE": {
+      "bytes": 122,
+      "sha256": "1e6cf37ca9a42725299753571fc6cf0de79afe11e4a1c30c613994243c59a39a"
+    },
+    "Package.swift": {
+      "bytes": 981,
+      "sha256": "1d21335522851e20770e39b45fd3e449bd85e8d872f25a30d51aad38045182a0"
+    },
+    "Sources/Theseus/Animation/TheseusGestureDeformer.swift": {
+      "bytes": 5119,
+      "sha256": "a16d8479c307e32e2efbcd70807509371a92d416c3010b2486c002643ae36b09"
+    },
+    "Sources/Theseus/Animation/TheseusStretchAnimator.swift": {
+      "bytes": 6589,
+      "sha256": "203f4f8371b5d60b73350f472ec11d294e8b1cb56b75c43c195a2f370d8d6fb5"
+    },
+    "Sources/Theseus/Components/TheseusLensMaterial.swift": {
+      "bytes": 8187,
+      "sha256": "b4eb6a23336e02a51b87d63559e81c33d5eee6d192b5d03788218ed61a5c1d6c"
+    },
+    "Sources/Theseus/Components/TheseusSlider.swift": {
+      "bytes": 57262,
+      "sha256": "8f917132a6eb8c23141bba1690ba4355402951bbef2fd27e3c2113e48ba8bd13"
+    },
+    "Sources/Theseus/Components/TheseusSwitch.swift": {
+      "bytes": 39392,
+      "sha256": "5349ffd26f8dd122e70d4158f5bd432d07190564a7c5998323d0db1217d48e65"
+    },
+    "Sources/Theseus/Components/TheseusTabBar.swift": {
+      "bytes": 120508,
+      "sha256": "20e29ef46313b5a96daea9b1146ce7726a392a91795c1d574b998fe22509d921"
+    },
+    "Sources/Theseus/Core/TheseusCapability.swift": {
+      "bytes": 13727,
+      "sha256": "c90c0f9364d2de1d97ded5716160675ae7837e0b985037922798a0ad8aa6bf68"
+    },
+    "Sources/Theseus/Core/TheseusConfiguration.swift": {
+      "bytes": 47470,
+      "sha256": "62b89b0b63f441c4d0f0424e00941483b2e0ec6f76ca90a60cda37414abe47fc"
+    },
+    "Sources/Theseus/Core/TheseusMaterialModel.swift": {
+      "bytes": 13038,
+      "sha256": "4d752fb410eb5635bc62872938dc39ef8bd5eac95c906c6586297e38fb736b96"
+    },
+    "Sources/Theseus/Core/TheseusSettings.swift": {
+      "bytes": 13644,
+      "sha256": "b85bf9601ba564a2e796b3cac32595f1174753affecf59fa29cc4260841e75b4"
+    },
+    "Sources/Theseus/Core/TheseusView.swift": {
+      "bytes": 16347,
+      "sha256": "569124416f8adbc03375062573d27d3d11335868d675f8222234efd47129ac24"
+    },
+    "Sources/Theseus/Internal/CapsuleEnds.swift": {
+      "bytes": 978,
+      "sha256": "0e7845ef0623adaac9564ac80d82fa6ca2210900c634659329ae87cfeef7d669"
+    },
+    "Sources/Theseus/Internal/DisplayLinkDriver.swift": {
+      "bytes": 6316,
+      "sha256": "7709eef8fbf779729c30d03f55d8e5a62af3ea92e15ecbb2b0c957ae829a7ac0"
+    },
+    "Sources/Theseus/Internal/FlexGlow.swift": {
+      "bytes": 2276,
+      "sha256": "99eafad9e524459b30c2a403b5090cf9e085087da1f53ce0f1768cbe460d9fbc"
+    },
+    "Sources/Theseus/Internal/GlassKnobShadowView.swift": {
+      "bytes": 1701,
+      "sha256": "a0d3c60553a37948e627397ed27718a25c2d81872d0795a44cbe15acd5f66847"
+    },
+    "Sources/Theseus/Internal/HapticManager.swift": {
+      "bytes": 2687,
+      "sha256": "e6561a60ea1444f16a0b17817dc84d5485405f93c23a8a9cd6c4b84b05b70619"
+    },
+    "Sources/Theseus/Internal/KnobGlassMorph.swift": {
+      "bytes": 4049,
+      "sha256": "253cfe704ffb474944ef8204ca8e63cc1c4d8fb162bd30091cfe64bf9e37dfde"
+    },
+    "Sources/Theseus/Internal/KnobGlassMotion.swift": {
+      "bytes": 4706,
+      "sha256": "17c6de06e8ee73545ebb94124a09105c1fc3e22261d0130c7ade962bb547ae7d"
+    },
+    "Sources/Theseus/Internal/LayoutTransition.swift": {
+      "bytes": 6854,
+      "sha256": "08f1263fd2c7953a0594774e516623e827881b725b611885873e6c44e6182663"
+    },
+    "Sources/Theseus/Internal/LensMorph.swift": {
+      "bytes": 7414,
+      "sha256": "6ca480798ac1ead683b86f554fcd4700dbff917fb246d1a6da1121e6202dc243"
+    },
+    "Sources/Theseus/Internal/NativeLens26.swift": {
+      "bytes": 6039,
+      "sha256": "0334808ec427bac9ad443c178630adf8b36f8ea42d3fe40ea6cc4b90410462d9"
+    },
+    "Sources/Theseus/Internal/PixelAlignment.swift": {
+      "bytes": 475,
+      "sha256": "d2c40495f33ad0ba3b0092142c6a66274bf8a931a25eca0502a834b9686478d9"
+    },
+    "Sources/Theseus/Internal/SimpleLayer.swift": {
+      "bytes": 2034,
+      "sha256": "4541cdb03ff41f8ff42c6c91d4a8547a22e33a1add9bc6dea3c5f12e69cb81fc"
+    },
+    "Sources/Theseus/Rendering/BackgroundCaptureDraw.swift": {
+      "bytes": 4626,
+      "sha256": "adc48d72a6dd63fca5285e19b6d575a540254c3a756e1d9735b885b8f3614465"
+    },
+    "Sources/Theseus/Rendering/BlurKernelCalculator.swift": {
+      "bytes": 2152,
+      "sha256": "c27721d6daa4aae7b16188405d99e2c7e197b335fdf69cde97213ded29a05ff4"
+    },
+    "Sources/Theseus/Rendering/CaptureCompensation.swift": {
+      "bytes": 4026,
+      "sha256": "d6b79de21e7ef1dce05401ba0417de00f174242c909759b03781e0d07c874eff"
+    },
+    "Sources/Theseus/Rendering/CaptureEdges.swift": {
+      "bytes": 2081,
+      "sha256": "16161b5857834e4502b61c2a598ffd0c93cef157bff658f414985386687a1754"
+    },
+    "Sources/Theseus/Rendering/MetalContext.swift": {
+      "bytes": 6787,
+      "sha256": "7fb249905c5317ca14caf8c9bf734f73d03ab81a7634c47731f06cc0b391c2e3"
+    },
+    "Sources/Theseus/Rendering/ShaderTypes.swift": {
+      "bytes": 8420,
+      "sha256": "f2d7f4514839afbf54c7f72bfb4dbcb867046d614311be1b547a090e83a6ed23"
+    },
+    "Sources/Theseus/Rendering/TheseusRenderer.swift": {
+      "bytes": 54818,
+      "sha256": "cba7c8ff8ef15c2db1b2230980f0bd07a7e9eda45cf482765cd7eb23a7a505fa"
+    },
+    "Sources/Theseus/Rendering/TheseusTextureCache.swift": {
+      "bytes": 2434,
+      "sha256": "ade49a6cdf128b9999e9fc484feb9eb8d4907c4f7dac85fc56c23dec5edb86d5"
+    },
+    "Sources/Theseus/Rendering/ViewLayerCapture.swift": {
+      "bytes": 6811,
+      "sha256": "137489e6e8bc6a12779e797a39b70d89f8efc11b6b78b8f7c890ee16c3e4ec38"
+    },
+    "Sources/Theseus/Rendering/VisualEffectFallback.swift": {
+      "bytes": 11007,
+      "sha256": "e3d562950a99eea6070687dbf5bff6a4ec8a30f383f7f8d9bfa29ad95f4e57e0"
+    },
+    "Sources/Theseus/Shaders/TheseusShaders.metal": {
+      "bytes": 83805,
+      "sha256": "608b0a6dd118a035c72c84009b56233d69e42b3020e95e9b184e72bf250db3fd"
+    }
+  }
+}

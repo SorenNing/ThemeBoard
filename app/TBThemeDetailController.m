@@ -569,6 +569,11 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     ]];
 }
 
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    TBStyleSearchBarGlass(self.search.searchBar);
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshMaskPreview];      // 遮罩形状参数可能在别处改过
@@ -596,9 +601,8 @@ static void TBDetailPrefsChanged(CFNotificationCenterRef center, void *observer,
     self.active = [[TBPrefs stringForKey:TBKeyActiveTheme] isEqualToString:self.theme.name];
     NSUInteger miss = self.installed > self.covered ? self.installed - self.covered : 0;
     self.navigationItem.rightBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithTitle:(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖")
-                                         style:UIBarButtonItemStylePlain
-                                        target:self action:@selector(missingTapped)],
+        TBGlassNavigationItem(miss ? [NSString stringWithFormat:@"缺 %lu", (unsigned long)miss] : @"全覆盖",
+                              nil, self, @selector(missingTapped)),
     ];
     if (self.collectionView.numberOfSections > 0) {
         [self.collectionView reloadSections:[NSIndexSet indexSetWithIndex:0]];
