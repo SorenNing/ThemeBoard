@@ -70,7 +70,7 @@ xcrun --sdk iphoneos swiftc -sdk "$SDK" -target "$TB_BUILD_ARCH-apple-ios$VERY" 
   -Xlinker -rpath -Xlinker /usr/lib/swift \
   -Xlinker -rpath -Xlinker '@executable_path/Frameworks' \
   -o "$APP/ThemeBoard" "${OBJS[@]}" "$OUT/theseus/ThemeBoardGlass.o"
-xcrun --sdk iphoneos lipo -verify_arch "$TB_BUILD_ARCH" "$APP/ThemeBoard"
+xcrun --sdk iphoneos lipo "$APP/ThemeBoard" -verify_arch "$TB_BUILD_ARCH"
 
 # Finish all bundle contents before its final signature is made.
 cp -R "$ROOT/app/Resources/." "$APP/"
@@ -97,7 +97,7 @@ xcrun --sdk iphoneos clang -target "$TB_BUILD_ARCH-apple-ios$VERY" -isysroot "$S
   -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
   -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO \
   -undefined dynamic_lookup -o "$OUT/engine/ThemeBoardEngine.dylib" "${EOBJS[@]}"
-xcrun --sdk iphoneos lipo -verify_arch "$TB_BUILD_ARCH" "$OUT/engine/ThemeBoardEngine.dylib"
+xcrun --sdk iphoneos lipo "$OUT/engine/ThemeBoardEngine.dylib" -verify_arch "$TB_BUILD_ARCH"
 codesign --force --sign - "$OUT/engine/ThemeBoardEngine.dylib"
 codesign --verify --deep --strict --verbose=2 "$OUT/engine/ThemeBoardEngine.dylib"
 mkdir -p "$APP/Engine"
@@ -115,7 +115,7 @@ xcrun --sdk iphoneos swift-stdlib-tool --copy --verbose --platform iphoneos \
 SWIFT_DYLIB_COUNT=0
 # A nullglob loop also handles zero copies under macOS Bash 3.2 with set -u.
 for dylib in "$APP"/Frameworks/*.dylib; do
-  xcrun --sdk iphoneos lipo -verify_arch "$TB_BUILD_ARCH" "$dylib"
+  xcrun --sdk iphoneos lipo "$dylib" -verify_arch "$TB_BUILD_ARCH"
   # Xcode can copy fat runtimes. Select the real matching slice, never relabel
   # an arm64 binary as arm64e. This invalidates its old signature: re-sign below.
   runtime_archs="$(xcrun --sdk iphoneos lipo -archs "$dylib")"
