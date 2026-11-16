@@ -133,21 +133,21 @@ echo "== Swift back-deployment runtime: $SWIFT_DYLIB_COUNT copied dylibs (system
 # Engine, resources, metadata, icons and acknowledgements must already be final.
 codesign --force --sign - --entitlements "$ROOT/tools/entitlements.plist" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
-codesign --display --entitlements - "$APP" > "$OUT/signed-entitlements.plist"
-python3 - "$ROOT/tools/entitlements.plist" "$OUT/signed-entitlements.plist" <<'PY'
+# Read the signed Mach-O entitlement slot directly. Modern codesign -d prints
+# a human-readable [Dict] tree by default, which is not a plist document.
+python3 - "$ROOT" "$APP/ThemeBoard" "$TB_BUILD_ARCH" "$OUT/signed-entitlements.plist" <<'PY'
+from pathlib import Path
 import plistlib
 import sys
-with open(sys.argv[1], 'rb') as f:
-    expected = plistlib.load(f)
-with open(sys.argv[2], 'rb') as f:
-    payload = f.read()
-# Older codesign may prefix XML with its 8-byte entitlement-blob header.
-if payload.startswith(bytes.fromhex('fade7171')):
-    payload = payload[8:]
-actual = plistlib.loads(payload)
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / 'tools'))
+from verify_packages import macho
+expected = plistlib.loads((root / 'tools/entitlements.plist').read_bytes())
+actual = macho(Path(sys.argv[2]).read_bytes(), sys.argv[3], sys.argv[2])['entitlements']
 if actual != expected:
     raise SystemExit('error: Signed App entitlements differ from tools/entitlements.plist')
-print('== Signed App entitlements verified')
+Path(sys.argv[4]).write_bytes(plistlib.dumps(actual))
+print('== Signed App entitlements verified from embedded signature')
 PY
 for dylib in "$APP"/Frameworks/*.dylib; do
   codesign --verify --strict --verbose=2 "$dylib"

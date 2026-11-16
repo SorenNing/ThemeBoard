@@ -154,13 +154,9 @@ def verify_signatures(files, modes, app_name, code_names, expected):
         for name in code_names + ([app_name] if app_name else []):
             subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2",
                             str(directory / name)], check=True)
-        if app_name:
-            result = subprocess.run(["codesign", "--display", "--entitlements", "-",
-                                     str(directory / app_name)], check=True, stdout=subprocess.PIPE)
-            raw = result.stdout
-            if raw.startswith(bytes.fromhex("fade7171")):
-                raw = raw[8:]
-            require(plistlib.loads(raw) == expected, "Final deb codesign entitlements mismatch")
+        # verify_package already parses and compares the embedded signed
+        # entitlement blob. The checks above validate that signature itself;
+        # never treat codesign's human-readable [Dict] output as a plist.
 
 
 def verify_package(path, root, arch, kind, signatures):
