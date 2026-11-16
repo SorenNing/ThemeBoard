@@ -188,35 +188,12 @@ final class TBTheseusSwitch: UIControl {
     @objc private func changed() { sendActions(for: .valueChanged) }
 }
 
-/// Same-module subclass changes only the Objective-C event forwarding hooks;
-/// original Theseus optics, geometry and tracking implementation run via super.
-private final class TBTrackedTheseusSlider: TheseusSlider {
-    var trackingActive = false
-    var began: (() -> Void)?
-    var ended: ((Bool) -> Void)?
-    var cancelled: (() -> Void)?
-
-    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
-        let accepted = super.beginTracking(touch, with: event)
-        if accepted { trackingActive = true; began?() }
-        return accepted
-    }
-    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
-        let inside = touch.map { bounds.contains($0.location(in: self)) } ?? false
-        super.endTracking(touch, with: event)
-        trackingActive = false
-        ended?(inside)
-    }
-    override func cancelTracking(with event: UIEvent?) {
-        super.cancelTracking(with: event)
-        trackingActive = false
-        cancelled?()
-    }
-}
-
+/// TheseusSlider is final. Compose it and forward this UIControl's actual
+/// tracking calls instead of inheriting from or changing the upstream class.
 @objc(TBTheseusSlider)
 final class TBTheseusSlider: UIControl {
-    private let control = TBTrackedTheseusSlider()
+    private let control = TheseusSlider()
+    private var forwardingTracking = false
     @objc var minimumValue: Float {
         get { Float(control.minimumValue) }
         set { control.minimumValue = CGFloat(newValue) }
@@ -237,21 +214,50 @@ final class TBTheseusSlider: UIControl {
     private func configure() {
         addSubview(control)
         control.addTarget(self, action: #selector(changed), for: .valueChanged)
-        control.began = { [weak self] in self?.sendActions(for: .touchDown) }
-        control.ended = { [weak self] inside in
-            guard let self else { return }
-            if !self.continuous { self.sendActions(for: .valueChanged) }
-            self.sendActions(for: inside ? .touchUpInside : .touchUpOutside)
-        }
-        control.cancelled = { [weak self] in self?.sendActions(for: .touchCancel) }
+        // Keep the original adjustable accessibility element. Physical touches
+        // target this adapter and are delegated to the final component below.
+        isAccessibilityElement = false
+        accessibilityElements = [control]
     }
     override var intrinsicContentSize: CGSize { control.intrinsicContentSize }
     override func layoutSubviews() { super.layoutSubviews(); control.frame = bounds }
     override var isEnabled: Bool { didSet { control.isEnabled = isEnabled } }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard let hit = super.hitTest(point, with: event) else { return nil }
+        return hit === control || hit.isDescendant(of: control) ? self : hit
+    }
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        control.gestureRecognizerShouldBegin(gestureRecognizer)
+    }
+    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        let accepted = control.beginTracking(touch, with: event)
+        forwardingTracking = accepted
+        return accepted
+    }
+    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        guard forwardingTracking else { return false }
+        return control.continueTracking(touch, with: event)
+    }
+    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
+        guard forwardingTracking else { return }
+        // Keep the flag set while upstream emits its final valueChanged, so a
+        // non-continuous adapter sends one value rather than two.
+        control.endTracking(touch, with: event)
+        forwardingTracking = false
+        if !continuous { sendActions(for: .valueChanged) }
+        super.endTracking(touch, with: event)
+    }
+    override func cancelTracking(with event: UIEvent?) {
+        guard forwardingTracking else { return }
+        control.cancelTracking(with: event)
+        forwardingTracking = false
+        super.cancelTracking(with: event)
+    }
     @objc(setValue:animated:) func setValue(_ value: Float, animated: Bool) {
         control.setValue(CGFloat(value), animated: animated)
     }
     @objc private func changed() {
-        if continuous || !control.trackingActive { sendActions(for: .valueChanged) }
+        if continuous || !forwardingTracking { sendActions(for: .valueChanged) }
     }
 }

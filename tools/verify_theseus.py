@@ -34,8 +34,18 @@ def verify(root):
     for name in ['TBTheseusSurface', 'TBTheseusSwitch', 'TBTheseusSlider']:
         assert '@objc(' + name + ')' in material
     assert 'TheseusView(configuration: .regular)' in material
-    assert 'TheseusSwitch()' in material and 'TBTrackedTheseusSlider: TheseusSlider' in material
-    assert 'override func cancelTracking' in material and '.touchCancel' in material
+    assert 'TheseusSwitch()' in material and 'private let control = TheseusSlider()' in material
+    assert 'control.beginTracking(touch, with: event)' in material
+    assert 'control.endTracking(touch, with: event)' in material
+    assert 'control.cancelTracking(with: event)' in material
+    # A final upstream component cannot be inherited even in the same module.
+    import re
+    final_classes = set()
+    for source in (vendor / 'Sources').rglob('*.swift'):
+        final_classes.update(re.findall(r'\bfinal\s+class\s+(\w+)', source.read_text()))
+    for source in (root / 'app').glob('*.swift'):
+        bases = re.findall(r'\bclass\s+\w+\s*:\s*(\w+)', source.read_text())
+        assert not final_classes.intersection(bases), 'Bridge inherits final upstream class: ' + source.name
     assert 'TheseusTabBar()' in (root / 'app/TBTheseusDock.swift').read_text()
     assert 'TBTheseusDock' in (root / 'app/TBRootController.m').read_text()
     assert 'TBTheseusSurface' in (root / 'app/TBGlass.m').read_text()

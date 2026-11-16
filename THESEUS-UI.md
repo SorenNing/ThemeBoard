@@ -18,7 +18,7 @@ The material is supplied by Theseus, not a locally imitated Metal shader or a se
 
 `TBTheseusSurface` explicitly captures the window, excludes the foreground host (or whole cell) and front sibling branches, and permits lower glass snapshots for nested controls. It uses the original regular preset and the same device/simulator capture method as the upstream controls. A shared visibility pass pauses surfaces outside the window/clipping chain or in hidden tabs/background; visible surfaces update for geometry, initial warmup and at most once a second when static. It does not run every card in continuous render mode. Native scrolling, simultaneous drag, modal stacking, keyboard transitions and actual GPU performance still require device testing.
 
-The dock invalidates its backdrop during visible scrolling and page transitions, and at a lower cadence while idle. VoiceOver activation proxies the original item labels, traits and frames while preserving reselect-to-pop. The slider adapter forwards real begin/end/cancel tracking separately and preserves non-continuous accessibility adjustments.
+The dock invalidates its backdrop during visible scrolling and page transitions, and at a lower cadence while idle. VoiceOver activation proxies the original item labels, traits and frames while preserving reselect-to-pop. The slider adapter is a UIControl that composes the final upstream TheseusSlider. It forwards physical begin/continue/end/cancel tracking to the original component and preserves non-continuous accessibility adjustments; it does not inherit or alter TheseusSlider.
 
 ## Build
 
