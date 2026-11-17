@@ -1,10 +1,12 @@
 // Private to ThemeBoardEngine.m. Rendering keeps a committed generation until a
 // fully prepared candidate is published. No UI objects belong to this state.
+static BOOL TBDarkSystemAppearance(void);
 @interface TBThemeRenderState : NSObject {
 @public
     NSDictionary *preferences;
     NSRecursiveLock *renderLock;
     NSUInteger generation;
+    BOOL darkIconBackground; // Frozen for the whole generation, including prewarm.
     NSMutableDictionary *fitCache, *index, *bundleRes, *resourceCache;
     NSString *indexTheme, *bundleResTheme, *resourceTheme;
     NSCache *imageCache, *clockFaceCache;
@@ -29,6 +31,9 @@
     if ((self = [super init])) {
         preferences = [values copy] ?: @{};
         generation = seq;
+        darkIconBackground = [values[@"DarkIconBackground"] boolValue] &&
+            (!values[@"Enabled"] || [values[@"Enabled"] boolValue]) &&
+            ![values[@"SafeMode"] boolValue] && TBDarkSystemAppearance();
         renderLock = [[NSRecursiveLock alloc] init];
         imageCache = [[NSCache alloc] init]; imageCache.countLimit = 600;
         clockFaceCache = [[NSCache alloc] init]; clockFaceCache.countLimit = 8;
@@ -56,7 +61,7 @@ static NSDictionary *TBReadPreferenceValues(void) {
                        @"MaskCornerRadius", @"UseThemeIconOverlay", @"UseThemeIconShadow",
                        @"UseThemeBadge", @"CustomMaskPath", @"CustomOverlayPath",
                        @"CustomShadowPath", @"CustomBadgePath", @"GlassOverlayStrength",
-                       @"GlobalIconEffect"];
+                       @"GlobalIconEffect", @"DarkIconBackground"];
     NSMutableDictionary *out = [NSMutableDictionary dictionaryWithCapacity:known.count];
     for (NSString *key in known) {
         id value = CFBridgingRelease(CFPreferencesCopyAppValue(

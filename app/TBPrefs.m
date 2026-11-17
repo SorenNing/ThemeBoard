@@ -54,6 +54,7 @@ static BOOL TBEnsureApplyReplyObserver(void) {
 NSString *const TBKeyEnabled       = @"Enabled";
 NSString *const TBKeyActiveTheme   = @"ActiveTheme";
 NSString *const TBKeyLogEnabled    = @"LogEnabled";
+NSString *const TBKeyDarkIconBackground = @"DarkIconBackground";
 
 NSString *const TBKeyUseThemeIconMask    = @"UseThemeIconMask";
 NSString *const TBKeyMaskCornerRadiusOn  = @"MaskCornerRadiusOn";

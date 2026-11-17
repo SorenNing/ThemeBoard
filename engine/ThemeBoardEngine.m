@@ -39,7 +39,9 @@ static NSUInteger gServe;
 static __thread BOOL gTBSettingsNativeIcon;
 static UIImage *TBThemedIconLike(UIImage *orig, NSString *bid);
 
+#import "TBDarkIconSystem.h"
 #import "TBRenderState.h"
+#import "TBDarkIconImage.h"
 
 #pragma mark - 日志
 
@@ -1522,6 +1524,8 @@ static UIImage *TBImageForBundle(NSString *bid) {
     if (cached) return cached;
 
     UIImage *img = [[UIImage alloc] initWithContentsOfFile:path];   // 不用被 hook 的类方法
+    if (![bid isEqualToString:@"com.apple.mobiletimer"])
+        img = TBDarkIconImage(img); // Calendar returns above; keep both live-icon pipelines stable.
     CGFloat inkPct = 0, opPct = 0;
     BOOL looksDrawn = TBImageDateAreaMetrics(img, &inkPct, &opPct);
     BOOL forceNoDate = NO;
@@ -3334,6 +3338,12 @@ static CGImageRef TBCGImageForBundle(NSString *bid) {
     if (!src) return NULL;
     CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, NULL);
     CFRelease(src);
+    if (img && TBCurrentRenderState()->darkIconBackground &&
+        ![bid isEqualToString:@"com.apple.mobilecal"] && ![bid isEqualToString:@"com.apple.mobiletimer"]) {
+        CGImageRef dark = TBDarkIconCGImage(img);
+        CGImageRelease(img);
+        img = dark;
+    }
     return img;   // Create 规则：调用方负责释放
 }
 
@@ -5798,6 +5808,8 @@ static void TBReload(CFNotificationCenterRef c, void *o, CFNotificationName n,
     });
 }
 
+#import "TBDarkIconAppearance.h"
+
 static void TBRefreshVisibleTablesLight(NSString *why) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
@@ -5841,6 +5853,7 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
     if (mySeq != gReloadRunSeq) return;
     CFPreferencesAppSynchronize((__bridge CFStringRef)kDomain);
     NSDictionary *values = TBReadPreferenceValues();
+    TBDarkRefreshObservation(values);
     TBThemeRenderState *candidate = [[TBThemeRenderState alloc]
         initWithPreferences:values generation:mySeq];
     NSString *theme = [values[@"ActiveTheme"] isKindOfClass:[NSString class]] ? values[@"ActiveTheme"] : nil;
@@ -5886,7 +5899,7 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
         if (mySeq != gReloadRunSeq) { prepare = nil; return; }
         @try {
             TB_RENDER_WITH(candidate);
-            NSUInteger end = MIN(cursor + 18, pending.count);
+            NSUInteger end = MIN(cursor + (candidate->darkIconBackground ? 2 : 18), pending.count);
             for (; cursor < end; cursor++) {
                 UIImage *image = TBImageForBundle(pending[cursor]);
                 if (image.CGImage) (void)CGImageGetWidth(image.CGImage);
@@ -5904,6 +5917,10 @@ static void TBRunReload(NSUInteger mySeq, NSString *why) {
         CFPreferencesAppSynchronize((__bridge CFStringRef)kDomain);
         if (![values isEqualToDictionary:TBReadPreferenceValues()]) {
             TBLog(@"准备期间偏好变化，弃用过期图像"); return;
+        }
+        if (candidate->darkIconBackground != TBDarkExpectedState(values)) {
+            TBReload(NULL, NULL, NULL, NULL, NULL);
+            return;
         }
         // Publish and update visible carriers in one disabled-animation transaction.
         [CATransaction begin];
@@ -5986,6 +6003,8 @@ static void TBMain(void) {
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBReload,
                                     (__bridge CFStringRef)kNotify, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    dispatch_async(dispatch_get_main_queue(), ^{ TBDarkScheduleAppearanceCheck(); });
 
     // ★ 0.18.5：0.18.3/0.18.4 的「首启补刷」（启动后 3s/8s 各做一次 heal + 刷新桌面）
     //   疑似导致 SpringBoard 反复重启（闪屏，一黑一亮），已整块移除。

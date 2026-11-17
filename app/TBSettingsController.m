@@ -39,7 +39,9 @@
         @[ @{@"t": @"在文件管理器中打开主题目录", @"act": @"open"} ],
         @[ @{@"t": @"日历不叠加日期", @"k": @"NoCalendarDate", @"v": @NO,
              @"d": @"主题日历图标已经画了日期时打开，直接用主题图标"} ],
-        @[ @{@"t": @"跟随系统深色模式", @"k": @"FollowSystem", @"v": @YES, @"d": @"关掉则固定浅色"} ],
+        @[ @{@"t": @"跟随系统深色模式", @"k": @"FollowSystem", @"v": @YES, @"d": @"App 界面；关掉则固定浅色"},
+           @{@"t": @"主题图标深色背景", @"k": TBKeyDarkIconBackground, @"v": @NO,
+             @"d": @"随系统深色压暗背景，关闭恢复原图"} ],
         @[ @{@"t": @"写日志", @"k": TBKeyLogEnabled, @"v": @NO},
            @{@"t": @"安全模式（只记录，不换图）", @"k": @"SafeMode", @"v": @NO},
            @{@"t": @"应用后清图标缓存", @"k": @"PurgeCache", @"v": @NO} ],
@@ -57,6 +59,7 @@
         @"日历不叠加日期": @"calendar.badge.minus",
         @"跟随系统深色模式": @"circle.lefthalf.filled", @"写日志": @"doc.text", @"安全模式（只记录，不换图）": @"exclamationmark.shield",
         @"应用后清图标缓存": @"arrow.clockwise",
+        @"主题图标深色背景": @"moon.fill",
     };
     NSMutableArray *patched = [NSMutableArray array];
     for (NSArray *sec in self.model) {
@@ -137,7 +140,7 @@
         return s;
     }
     if (section == 4) return nil;
-    if (section == 5) return nil;
+    if (section == 5) return @"主题图标深色背景默认关闭。开启后，系统深色时将白色背景变黑、有色背景压暗；识别到的主体保持原色。复杂、透明图标可能保持原图，时钟和日历保留原样；浅色模式或关闭开关时恢复原图。";
     if (section == 6) return @"两个诊断开关默认关闭，重启桌面/重启用户空间后不会再自己打开。\n安全模式：只写日志、绝不换图（排查用）。\n清图标缓存：个别图标换了主题赖着不换时才需要打开；平常应用主题本身就会让桌面刷新。";
     return nil;
 }

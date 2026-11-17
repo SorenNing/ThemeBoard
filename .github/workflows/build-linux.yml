@@ -1,11 +1,6 @@
 name: build-linux
 
 on:
-  push:
-    paths:
-      - '.github/workflows/build-linux.yml'
-      - 'tools/ci-linux-build.sh'
-      - 'engine/**'
   workflow_dispatch:
 
 jobs:

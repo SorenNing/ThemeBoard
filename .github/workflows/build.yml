@@ -1,9 +1,10 @@
 name: build
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -18,6 +19,17 @@ jobs:
 
       - name: Build package
         run: bash tools/ci-build.sh
+
+      - name: Verify final signed packages
+        run: python3 tools/verify_darkmode_build.py dist build/verification.json
+
+      - name: Upload verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: themeboard-verification
+          path: build/verification.json
+          if-no-files-found: ignore
 
       - name: Upload deb
         uses: actions/upload-artifact@v4

@@ -9,6 +9,7 @@ extern NSString *const TBKeyApplyRequestID; // NSNumber，非 0 的随机 63-bit
 extern NSString *const TBKeyEnabled;        // BOOL 总开关
 extern NSString *const TBKeyActiveTheme;    // NSString 主题名
 extern NSString *const TBKeyLogEnabled;     // BOOL
+extern NSString *const TBKeyDarkIconBackground; // BOOL 默认 NO，主题图标背景跟随系统深色
 
 // ---- 图标形状 / 特效（引擎与 App 共用，键名不能改）----
 extern NSString *const TBKeyUseThemeIconMask;      // BOOL 用遮罩图当图标形状

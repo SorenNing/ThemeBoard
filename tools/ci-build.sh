@@ -35,8 +35,7 @@ clang -target "arm64-apple-ios$VERY" -isysroot "$SDK" \
       -framework QuartzCore -framework ImageIO -lz -framework UniformTypeIdentifiers \
       -o "$APP/ThemeBoard" "${OBJS[@]}"
 
-codesign --force --sign - --entitlements tools/entitlements.plist "$APP" 2>/dev/null || \
-    codesign --force --sign - "$APP"
+# Sign the completed bundle after Info, resources and embedded engine are installed.
 cp app/Resources/Info.plist "$APP/Info.plist"
 # 版本号以 control 为准（Info.plist 里的值早就过期了）
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$APP/Info.plist" 2>/dev/null || true
@@ -60,7 +59,7 @@ if compgen -G "engine/*.m" > /dev/null; then
   done
   clang -target "arm64e-apple-ios$VERY" -isysroot "$SDK" -dynamiclib \
         -F"$SDK/System/Library/Frameworks" -L"$SDK/usr/lib" \
-        -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO \
+        -framework Foundation -framework UIKit -framework CoreGraphics -framework ImageIO -framework QuartzCore \
         -undefined dynamic_lookup \
         -o "$OUT/engine/ThemeBoardEngine.dylib" "${EOBJS[@]}"
   codesign --force --sign - "$OUT/engine/ThemeBoardEngine.dylib"
@@ -72,6 +71,10 @@ if compgen -G "engine/*.m" > /dev/null; then
   awk '/^Version:/{print $2}' control.engine > "$APP/Engine/version.txt"
   ENGINE_BUILT=1
 fi
+
+codesign --force --sign - --entitlements tools/entitlements.plist "$APP"
+codesign --verify --deep --strict --all-architectures "$APP"
+codesign --verify --strict --all-architectures "$OUT/engine/ThemeBoardEngine.dylib"
 
 # ---------- 打包 ----------
 STAGE="$OUT/stage"
