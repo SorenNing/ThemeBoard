@@ -441,6 +441,16 @@ static void TBLoadIndex(void) {
         map[bid] = [dir stringByAppendingPathComponent:f];
         rank[bid] = @(r);
     }
+    // CarPlay 设置是独立 App：缺少专用图时复用手机设置的主题图。
+    // 从系统 Info.plist 取真实标识，避免硬编码猜测；每次重建主题索引才读取。
+    NSString *settingsPath = map[@"com.apple.Preferences"];
+    if (settingsPath.length) {
+        NSDictionary *carPlayInfo = [[NSDictionary alloc] initWithContentsOfFile:
+            @"/Applications/CarPlaySettings.app/Info.plist"];
+        id carPlayID = carPlayInfo[@"CFBundleIdentifier"];
+        if ([carPlayID isKindOfClass:[NSString class]] && [carPlayID length] && !map[carPlayID])
+            map[carPlayID] = settingsPath;
+    }
     BOOL first = (gIndex == nil);
     gIndex = map;
     gIndexTheme = theme;
