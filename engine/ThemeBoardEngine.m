@@ -3556,15 +3556,7 @@ static id tb_ifImgSize(id self, SEL _cmd, CGSize size, double scale) {
     return o_ifImgSize ? o_ifImgSize(self, _cmd, size, scale) : nil;
 }
 
-typedef UIImage *(*UIActivityIconFn)(id, SEL, NSString *);
-static UIActivityIconFn o_activityIcon;
-
-/// ShareSheet.framework/UIActivity：分享面板里每个 App 的图标
-static UIImage *tb_activityImageForBID(id self, SEL _cmd, NSString *bid) {
-    UIImage *img = TBImageForBundle(bid);
-    if (img) { gServe++; TBLog(@"serve UIActivity %@", bid); return img; }
-    return o_activityIcon ? o_activityIcon(self, _cmd, bid) : nil;
-}
+// ShareSheet/SharingUI image hooks are defined after the image fitting helpers.
 
 
 #pragma mark - IconServices（设置页 / 资源库 / 通知中心那条链）
@@ -4443,6 +4435,8 @@ static UIImage *TBThemedIconLike(UIImage *orig, NSString *bid) {
     return out;
 }
 
+#include "TBShareIcons.h"
+
 static UIImage *(*o_specIcon)(id, SEL);
 static UIImage *tb_specIcon(id self, SEL _cmd) {
     UIImage *orig = o_specIcon ? o_specIcon(self, _cmd) : nil;
@@ -4694,7 +4688,6 @@ static id tb_imageSet(id self, SEL _cmd, void *metrics) {
 
 static BOOL gDoneImageHooks = NO;      // UIImage / NSBundle 那组
 static BOOL gDoneISIcon = NO;
-static BOOL gDoneActivity = NO;
 static BOOL gDoneCache = NO;
 // ---- 静态图标模式：隐藏系统指针（图标自己画了指针，否则会重影）----
 // ---- 替换角标底板（SBBadgeBG）：系统取角标图不走 imageNamed:，只能从视图层换 ----
@@ -5300,8 +5293,8 @@ static void TBInstall(void) {
     Class cache = NSClassFromString(@"SBHIconImageCache");
     Class icon  = NSClassFromString(@"SBIcon");
     Class isicon = NSClassFromString(@"ISIcon");
-    Class activity = NSClassFromString(@"UIActivity");
     Class spec = NSClassFromString(@"PSSpecifier");
+    Class activity = NSClassFromString(@"UIActivity"); // class-status log only
     Class clockView = NSClassFromString(@"SBHClockApplicationIconImageView");
     if (gIsPrimary) {
         TBLog(@"=== iOS 版本=%d 类状态: SBHIconImageCache=%@ SBIcon=%@ ISIcon=%@ UIActivity=%@ PSSpecifier=%@ ClockView=%@ ===",
@@ -5439,14 +5432,8 @@ static void TBInstall(void) {
                           (IMP)tb_psPrepareForReuse,&o_tbPSPrepareForReuse,"v@:");
     }
 
-    // UIActivity 分享面板图标（运行时检测）
-    if (activity && !gDoneActivity) {
-        gDoneActivity = YES;
-        if (TBHasMethod(activity, @"_activityImageForApplicationBundleIdentifier:")) {
-            o_activityIcon = (UIActivityIconFn)TBHookClass(activity,
-                @"_activityImageForApplicationBundleIdentifier:", (IMP)tb_activityImageForBID, "UIActivity 图标");
-        }
-    }
+    // Each share selector is ABI-checked and independently installed once.
+    TBShareInstallIcons();
 
     // SBHIconImageCache 主通道（所有版本的核心缓存接口）
     if (cache && !gDoneCache) {
@@ -5989,6 +5976,7 @@ static void TBMain(void) {
         TBLog(@"主题=%@ 开关=%@", TBActiveTheme() ?: @"(无)", TBEnabled() ? @"开" : @"关");
     }
     TBInstall();
+    TBShareObserveImages();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, TBHandleRespring,
                                     (__bridge CFStringRef)kRespring, NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);

@@ -64,7 +64,7 @@ def main():
  for path in packages:
   members=ar(path);control=tarfiles(members['control.tar.gz'])['control'].decode()
   fields=dict(line.split(': ',1) for line in control.splitlines() if ': ' in line)
-  assert fields['Version']=='1.50.2' and fields['Architecture'] in ('iphoneos-arm64','iphoneos-arm64e')
+  assert fields['Version']=='1.50.3' and fields['Architecture'] in ('iphoneos-arm64','iphoneos-arm64e')
   assert fields['Maintainer']==fields['Author']=='Ning'
   kind='engine' if fields['Package'].endswith('.engine') else 'app'
   variant=fields['Architecture']
@@ -82,16 +82,18 @@ def main():
   if kind=='app':
    app='var/jb/Applications/ThemeBoard.app/'
    info=plistlib.loads(files[app+'Info.plist'])
-   assert info['CFBundleShortVersionString']=='1.50.2' and info['CFBundleIdentifier']=='com.ning.themeboard'
+   assert info['CFBundleShortVersionString']=='1.50.3' and info['CFBundleIdentifier']=='com.ning.themeboard'
    assert info['MinimumOSVersion']=='15.0'
    ent=programs[app+'ThemeBoard']['entitlements']
    for key in ['platform-application','com.apple.private.security.storage.MobileDocuments','com.apple.private.security.storage.AppDataContainers','com.apple.private.skip-library-validation']:
     assert ent.get(key) is True,key
-   assert files[app+'Engine/version.txt'].strip()==b'1.50.2'
+   assert files[app+'Engine/version.txt'].strip()==b'1.50.3'
    assert b'DarkIconBackground' not in files[app+'ThemeBoard']
   for name,b in files.items():
    if name.endswith('ThemeBoardEngine.dylib'):
     assert b'DarkIconBackground' not in b and b'TBDarkAppearanceProbe' not in b
+    for marker in [b'_handleIconImage:bundleIdentifier:activityCategory:contentSizeCategory:placeholder:', b'imageForApplicationIconFormat:activityCategory:', b'activityBundleHelper', b'_dyld_register_func_for_add_image']:
+     assert marker in b,('missing share fix',marker)
     assert '/Applications/CarPlaySettings.app/Info.plist'.encode('utf-16le') in b or b'/Applications/CarPlaySettings.app/Info.plist' in b
   if sys.platform=='darwin':
    with tempfile.TemporaryDirectory(prefix='themeboard-final-') as tmp:
@@ -106,7 +108,7 @@ def main():
   app_files=payloads[(variant,'app')];engine_files=payloads[(variant,'engine')]
   assert not set(app_files)&set(engine_files),'app-engine file collision'
   assert app_files['var/jb/Applications/ThemeBoard.app/Engine/ThemeBoardEngine.dylib']==engine_files['var/jb/Library/MobileSubstrate/DynamicLibraries/ThemeBoardEngine.dylib']
- result={'passed':True,'version':'1.50.2','source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip(),'packages':rows,'embedded_engine_equal':True,'file_ownership_overlap':0,'note':'1.50-compatible var/jb layout; App arm64, separately compiled arm64 and real arm64e engines; no device/runtime validation'}
+ result={'passed':True,'version':'1.50.3','source_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip(),'packages':rows,'embedded_engine_equal':True,'file_ownership_overlap':0,'note':'1.50-compatible var/jb layout; App arm64, separately compiled arm64 and real arm64e engines; no device/runtime validation'}
  dest.parent.mkdir(parents=True,exist_ok=True);dest.write_text(json.dumps(result,ensure_ascii=False,indent=2))
  print(json.dumps({'passed':True,'packages':[{k:p[k] for k in ['name','bytes','sha256']} for p in rows]},ensure_ascii=False))
 if __name__=='__main__':main()
