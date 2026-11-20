@@ -3699,7 +3699,11 @@ static NSString *TBSettingsISBundleID(id icon) {
     @try {
         for (const char **name=(const char *[]){"bundleIdentifier","applicationBundleIdentifier",NULL};*name;name++) {
             SEL selector=sel_registerName(*name);
-            Method getter=class_getInstanceMethod(object_getClass(icon),selector);
+            // ISIcon exposes the App identifier as an instance getter. Looking
+            // it up on the metaclass misses the method on iOS 17.2.1, so the
+            // previous code returned nil for every Settings icon and always
+            // fell back to the native image.
+            Method getter=class_getInstanceMethod([icon class],selector);
             if (!TBPSMethodMatches(getter,"@@:")) continue;
             @try {
                 id value=((id(*)(id,SEL))method_getImplementation(getter))(icon,selector);
