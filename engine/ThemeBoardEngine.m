@@ -1608,6 +1608,7 @@ static NSString *TBBIDFromIcon(id icon) {
     //   除非未来做真机运行时 dump 并找到安全插入点，否则不再尝试。
 
 static void TBRefreshVisibleTablesLight(NSString *why);
+static void TBRefreshSettingsIconsBatch(NSString *why);
 
 // ---- Settings App row icons: synchronous PSTableCell source ----
 static __thread BOOL gTBPSGetterDepth;
@@ -1787,6 +1788,162 @@ static BOOL TBPSInstallMethod(Class cls,SEL selector,IMP replacement,IMP *origin
     method_setImplementation(local,replacement);
     return YES;
 }
+
+static NSDictionary *gNameToBID;
+
+static void TBBuildNameMap(void) {
+    TB_RENDER_SCOPE();
+    // ★ 0.16.3：直接【按主题索引里的 bundleID】建「显示名→bundleID」表 —— 只查主题覆盖的 App，
+    //   既覆盖了系统 App（邮件/日历…allApplications 里常常没有），又快（百来条）。
+    static BOOL building = NO;
+    if (gNameToBID || building) return;
+    building = YES;
+    NSArray *bids = nil;
+    [gLock lock];
+    TBLoadIndex();
+    bids = gIndex ? [gIndex allKeys] : nil;
+    [gLock unlock];
+    NSArray *snapshot = [bids copy];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSMutableDictionary *m = [NSMutableDictionary dictionary];
+        Class proxyCls = NSClassFromString(@"LSApplicationProxy");
+        SEL selProxy = NSSelectorFromString(@"applicationProxyForIdentifier:");
+        for (NSString *bid in snapshot) {
+            @try {
+                NSString *nm = nil;
+                if (proxyCls && [proxyCls respondsToSelector:selProxy]) {
+                    id proxy = ((id (*)(id, SEL, id))objc_msgSend)(proxyCls, selProxy, bid);
+                    if (proxy) {
+                        for (NSString *s2 in @[ @"localizedName", @"itemName" ]) {
+                            if (![proxy respondsToSelector:NSSelectorFromString(s2)]) continue;
+                            id v = ((id (*)(id, SEL))objc_msgSend)(proxy, NSSelectorFromString(s2));
+                            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) { nm = v; break; }
+                        }
+                    }
+                }
+                if (nm.length) m[nm] = bid;
+            } @catch (NSException *e) {}
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            gNameToBID = [m copy];
+            building = NO;
+            TBLog(@"设置页图标：按主题索引建映射表 %lu 条", (unsigned long)m.count);
+        });
+    });
+}
+
+static NSMutableDictionary *gTitleImg;      // 行标题 → 已缩放的图（NSNull 表示无主题）
+static const void *kTBDoneKey = &kTBDoneKey; // cell 上打标记，一行只处理一次
+
+/// 取 cell 的标题文字（先 textLabel，再浅层搜第一个 UILabel，最多 15 个节点）
+static NSString *TBCellTitleText(id cell) {
+    @try {
+        if ([cell respondsToSelector:@selector(textLabel)]) {
+            UILabel *l = ((UILabel * (*)(id, SEL))objc_msgSend)(cell, @selector(textLabel));
+            if ([l isKindOfClass:[UILabel class]] && l.text.length) return l.text;
+        }
+    } @catch (NSException *e) {}
+    NSMutableArray *stack = [NSMutableArray arrayWithObject:cell];
+    NSInteger n = 0;
+    while (stack.count && n < 15) {
+        UIView *v = stack.firstObject; [stack removeObjectAtIndex:0]; n++;
+        if ([v isKindOfClass:[UILabel class]] && ((UILabel *)v).text.length) return ((UILabel *)v).text;
+        [stack addObjectsFromArray:[v.subviews copy]];
+    }
+    return nil;
+}
+
+/// 批量替换：只扫描"屏幕上可见的表格行"，按行标题换成主题图标。
+/// 不进 setImage: 热路径，所以滚动时零开销。
+static void TBApplyIconToCellByTitle(UITableViewCell *cell) {
+    @try {
+        if (!cell) return;
+        // 1.51：只更新已有的主图标，不把编辑 +/-、附件或其他子图像当成 App 图标。
+        UIImageView *rowImageView = cell.imageView;
+        if (![rowImageView isKindOfClass:[UIImageView class]] ||
+            ![rowImageView.image isKindOfClass:[UIImage class]] ||
+            ![rowImageView isDescendantOfView:cell] || rowImageView.hidden || rowImageView.alpha <= 0) return;
+        CGSize rowSize = rowImageView.bounds.size;
+        if (rowSize.width < 8 || rowSize.width > 64 || fabs(rowSize.width - rowSize.height) > 4) return;
+        NSString *title = TBCellTitleText(cell);
+        if (!title.length) return;
+        if (!gNameToBID) { TBBuildNameMap(); return; }
+        if (!gTitleImg) gTitleImg = [NSMutableDictionary dictionary];
+        id cached = gTitleImg[title];
+        UIImage *sized = nil;
+        if ([cached isKindOfClass:[UIImage class]]) sized = cached;
+        else if (cached) return;
+        else {
+            NSString *bid = gNameToBID[title];
+            UIImage *theme = bid.length ? TBImageForBundle(bid) : nil;
+            if (![theme isKindOfClass:[UIImage class]]) { gTitleImg[title] = [NSNull null]; return; }
+            CGSize sz = CGSizeMake(29, 29);
+            if (rowImageView.bounds.size.width > 8) sz = rowImageView.bounds.size;
+            TBInfo info = { sz, [UIScreen mainScreen].scale, 0 };
+            sized = TBFitCached(theme, info, bid) ?: theme;
+            gTitleImg[title] = sized ?: (id)[NSNull null];
+            TBLogOnce([@"ivrow|" stringByAppendingString:bid], @"设置页图标(批量)：%@（行「%@」）已替换", bid, title);
+        }
+        if (![sized isKindOfClass:[UIImage class]]) return;
+        if (rowImageView.image != sized) {
+            rowImageView.image = sized;
+            rowImageView.contentMode = UIViewContentModeScaleAspectFit;
+        }
+    } @catch (NSException *e) {}
+}
+
+static void (*o_prepareReuse)(id, SEL);
+static void tb_prepareReuse(id self, SEL _cmd) {
+    if (o_prepareReuse) o_prepareReuse(self, _cmd);
+    // 0.16.8：cell 复用会把图换回系统图 → 复用后立刻按标题再贴一次（很轻：字典查表）
+    @try {
+        if ([[NSProcessInfo processInfo].processName isEqualToString:@"Preferences"]) {
+            if ([self isKindOfClass:[UITableViewCell class]]) {
+                dispatch_async(dispatch_get_main_queue(), ^{ TBApplyIconToCellByTitle((UITableViewCell *)self); });
+            }
+        }
+    } @catch (NSException *e) {}
+}
+
+static void TBRefreshSettingsIconsBatch(NSString *why) {
+    TB_RENDER_SCOPE();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            NSMutableArray<UIView *> *stack = [NSMutableArray array];
+            // 0.16.9：只从 keyWindow 起扫、节点上限降到 120（原来扫所有窗口 400 节点，每 1.2s 跑一次有开销）
+            UIWindow *kw = nil;
+            @try { kw = [[UIApplication sharedApplication] keyWindow]; } @catch (NSException *e) {}
+            if (kw) [stack addObject:kw];
+            else for (UIView *w in [[UIApplication sharedApplication] windows]) [stack addObject:w];
+            NSInteger n = 0, rows = 0;
+            // 0.16.10：滚动中不扫（用户实测设置滑动时不时卡 —— 就是这个定时扫描正好落在滚动里）
+            BOOL scrolling = NO;
+            for (UIView *w in [UIApplication sharedApplication].windows) {
+                if ([w isKindOfClass:[UIScrollView class]] &&
+                    (((UIScrollView *)w).isDragging || ((UIScrollView *)w).isDecelerating)) { scrolling = YES; break; }
+                for (UIView *sub in w.subviews) {
+                    if ([sub isKindOfClass:[UIScrollView class]] &&
+                        (((UIScrollView *)sub).isDragging || ((UIScrollView *)sub).isDecelerating)) { scrolling = YES; break; }
+                }
+                if (scrolling) break;
+            }
+            if (scrolling) return;
+            while (stack.count && n < 80) {
+                UIView *v = stack.firstObject; [stack removeObjectAtIndex:0]; n++;
+                if ([v isKindOfClass:[UITableView class]]) {
+                    UITableView *tv = (UITableView *)v;
+                    for (NSIndexPath *ip in [tv indexPathsForVisibleRows]) {
+                        UITableViewCell *c = [tv cellForRowAtIndexPath:ip];
+                        if (c) { TBApplyIconToCellByTitle(c); rows++; }
+                    }
+                }
+                [stack addObjectsFromArray:[v.subviews copy]];
+            }
+            if (rows) TBLog(@"设置页图标(批量 %@)：扫描 %ld 行", why ?: @"?", (long)rows);
+        } @catch (NSException *e) { }
+    });
+}
+
 
 // ---- 时钟供图（0.18.1 的四 hook 版）已整体移除：见 0.18.7 说明 ----
 
@@ -5431,6 +5588,28 @@ static void TBInstall(void) {
         TBPSInstallMethod(cell,NSSelectorFromString(@"setIcon:"),(IMP)tb_psSetIcon,&o_tbPSSetIcon,"v@:@");
         TBPSInstallMethod(cell,NSSelectorFromString(@"prepareForReuse"),
                           (IMP)tb_psPrepareForReuse,&o_tbPSPrepareForReuse,"v@:");
+
+        // iOS 17 设置首页的 App 行由 UITableViewCell/UITableViewModel 驱动，
+        // 不一定经过 PSTableCell。复用后系统会把原图写回，按可见行补刷主题图。
+        Class tableCell=NSClassFromString(@"UITableViewCell");
+        TBPSInstallMethod(tableCell,NSSelectorFromString(@"prepareForReuse"),
+                          (IMP)tb_prepareReuse,&o_prepareReuse,"v@:");
+        static BOOL sSettingsRefreshScheduled = NO;
+        if (!sSettingsRefreshScheduled) {
+            sSettingsRefreshScheduled = YES;
+            for (double d=0.8; d<=3.2; d+=0.6) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(d*NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{ TBRefreshSettingsIconsBatch(@"启动"); });
+            }
+            static NSTimer *sTimer = nil;
+            if (!sTimer) {
+                sTimer = [NSTimer timerWithTimeInterval:1.2 repeats:YES block:^(NSTimer *timer) {
+                    TBRefreshSettingsIconsBatch(@"定时");
+                }];
+                sTimer.tolerance=0.3;
+                [[NSRunLoop mainRunLoop] addTimer:sTimer forMode:NSRunLoopCommonModes];
+            }
+        }
     }
 
     // UIActivity 分享面板图标（运行时检测）
